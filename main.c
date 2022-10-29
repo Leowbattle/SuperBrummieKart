@@ -64,6 +64,11 @@ vec3 vec3_cross(vec3 a, vec3 b) {
 	};
 }
 
+vec3 vec3_normalize(vec3 a) {
+	float m = sqrtf(a.x * a.x + a.y * a.y + a.z * a.z);
+	return (vec3){a.x / m, a.y / m, a.z / m};
+}
+
 SDL_Window* window;
 SDL_Renderer* renderer;
 SDL_Texture* frameTexture;
@@ -154,7 +159,7 @@ int main() {
             }
         }
 
-		Camera_SetYawPitch(&mainCamera, mainCamera.yaw + 0.1f, mainCamera.pitch + 0.0f);
+		Camera_SetYawPitch(&mainCamera, mainCamera.yaw + 0.1f, mainCamera.pitch + 0.1f);
 
 		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
 		SDL_RenderClear(renderer);
@@ -167,7 +172,9 @@ int main() {
 				float x = mapf(j, 0, GAME_WIDTH, -1, 1);
 				float y = mapf(i, 0, GAME_HEIGHT, 1, -1);
 
-				vec3 dir = vec3_scale(vec3_add(mainCamera.forward, vec3_add(vec3_scale(mainCamera.right, x), vec3_scale(mainCamera.up, y))), 100);
+				vec3 dir = vec3_scale(vec3_normalize(vec3_add(
+					vec3_scale(mainCamera.forward, mainCamera.cam_dist), 
+					vec3_add(vec3_scale(mainCamera.right, x * GAME_WIDTH / 2), vec3_scale(mainCamera.up, y * GAME_HEIGHT / 2)))), 255);
 
 				// SetPixel(j, i, (rgb){(uint8_t)(j ^ i), 0, 0});
 				SetPixel(j, i, (rgb){fabsf(dir.x), fabsf(dir.y), fabsf(dir.z)});
