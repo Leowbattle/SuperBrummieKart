@@ -154,7 +154,7 @@ int main() {
             }
         }
 
-		Camera_SetYawPitch(&mainCamera, mainCamera.yaw + 0.1f, mainCamera.pitch + 0.1f);
+		Camera_SetYawPitch(&mainCamera, mainCamera.yaw + 0.1f, mainCamera.pitch + 0.0f);
 
 		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
 		SDL_RenderClear(renderer);
