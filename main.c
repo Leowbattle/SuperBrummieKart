@@ -45,54 +45,6 @@ float clampf(float x, float a, float b) {
 	return x;
 }
 
-typedef struct List {
-	void** data;
-	size_t len;
-	size_t capacity;
-} List;
-
-void List_Init(List* list) {
-	list->data = NULL;
-	list->len = 0;
-	list->capacity = 0;
-}
-
-void List_Deinit(List* list) {
-	if (list->data != NULL) {
-		free(list->data);
-	}
-
-	list->data = NULL;
-	list->len = 0;
-	list->capacity = 0;
-}
-
-void List_Add(List* list, void* item) {
-	if (list->data == NULL) {
-		list->capacity = 4;
-		list->data = malloc(list->capacity * sizeof(void*));
-	}
-
-	if (list->len >= list->capacity) {
-		list->capacity *= 2;
-		list->data = realloc(list->data, list->capacity * sizeof(void*));
-	}
-
-	list->data[list->len] = item;
-	list->len++;
-}
-
-// typedef int (*List_Comparer)(void* item, void* userdata);
-
-// int List_Search(List* list, List_Comparer comparer, void* userdata) {
-// 	for (int i = 0; i < list->len; i++) {
-// 		if (comparer(list->data[i], userdata) == 0) {
-// 			return i;
-// 		}
-// 	}
-// 	return -1;
-// }
-
 typedef struct rgb {
 	uint8_t r;
 	uint8_t g;
@@ -104,6 +56,14 @@ typedef struct vec2 {
 	float y;
 } vec2;
 
+vec2 vec2_scale(vec2 a, float s) {
+	return (vec2){a.x * s, a.y * s};
+}
+
+float vec2_dot(vec2 a, vec2 b) {
+	return a.x * b.x + a.y * b.y;
+}
+
 typedef struct vec3 {
 	float x;
 	float y;
@@ -112,6 +72,10 @@ typedef struct vec3 {
 
 vec3 vec3_add(vec3 a, vec3 b) {
 	return (vec3){a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+vec3 vec3_sub(vec3 a, vec3 b) {
+	return (vec3){a.x - b.x, a.y - b.y, a.z - b.z};
 }
 
 vec3 vec3_scale(vec3 a, float s) {
@@ -133,6 +97,54 @@ vec3 vec3_cross(vec3 a, vec3 b) {
 vec3 vec3_normalize(vec3 a) {
 	float m = sqrtf(a.x * a.x + a.y * a.y + a.z * a.z);
 	return (vec3){a.x / m, a.y / m, a.z / m};
+}
+
+vec2 linear_solve2(float a, float b, float c, float d, float e, float f) {
+	float s = a * d - b * c;
+
+	return (vec2){
+		(e * d - b * f) / s,
+		(a * f - e * c) / s
+	};
+}
+
+typedef struct mat3 {
+	float a, b, c, d, e, f, g, h, i;
+} mat3;
+
+void mat3_invert(mat3* m) {
+	float 
+		a = m->a,
+		b = m->b,
+		c = m->c,
+		d = m->d,
+		e = m->e,
+		f = m->f,
+		g = m->g,
+		h = m->h,
+		i = m->i;
+
+	float s = 1 / (a*e*i-a*f*h-b*d*i+b*f*g+c*d*h-c*e*g);
+
+	m->a = (e*i-f*h)*s;
+	m->b = (c*h-b*i)*s;
+	m->c = (b*f-c*e)*s;
+	
+	m->d = (f*g-d*i)*s;
+	m->e = (a*i-c*g)*s;
+	m->f = (c*d-a*f)*s;
+
+	m->g = (d*h-e*g)*s;
+	m->h = (b*g-a*h)*s;
+	m->i = (a*e-b*d)*s;
+}
+
+vec3 mat3_mul(mat3 m, vec3 v) {
+	return (vec3){
+		m.a * v.x + m.b * v.y + m.c * v.z,
+		m.d * v.x + m.e * v.y + m.f * v.z,
+		m.g * v.x + m.h * v.y + m.i * v.z,
+	};
 }
 
 SDL_Window* window;
@@ -161,7 +173,8 @@ int mousexrel;
 int mouseyrel;
 
 typedef enum CameraMode {
-	FreeFlyCamera
+	FreeFlyCamera,
+	FirstPerson,
 } CameraMode;
 
 typedef struct Camera {
@@ -206,12 +219,21 @@ void Camera_SetFovY(Camera* cam, float fy) {
 	cam->cam_dist = GAME_HEIGHT / (2 * tanf(fy / 2));
 }
 
+rgb SampleSurface(SDL_Surface* surf, int x, int y) {
+	uint8_t* pixelData = surf->pixels;
+	uint8_t r = pixelData[y * surf->pitch + x * 3 + 0];
+	uint8_t g = pixelData[y * surf->pitch + x * 3 + 1];
+	uint8_t b = pixelData[y * surf->pitch + x * 3 + 2];
+	return (rgb){r,g,b};
+}
+
 typedef struct Track {
 	SDL_Surface* trackImage;
+	SDL_Surface* attributeImage;
 	int size_log2;
 } Track;
 
-void Track_Load(Track* tr, const char* path) {
+void Track_Load(Track* tr, const char* path, const char* attr_path) {
 	SDL_Surface* surf = IMG_Load(path);
 	if (surf == NULL) {
 		fprintf(stderr, "Unable to load track: %s\n", IMG_GetError());
@@ -227,7 +249,13 @@ void Track_Load(Track* tr, const char* path) {
 	SDL_Surface* surf2 = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGB24, 0);
 	tr->trackImage = surf2;
 	tr->size_log2 = size_log2;
+
+	SDL_Surface* attr_surf = IMG_Load(attr_path);
+	SDL_Surface* attr_surf2 = SDL_ConvertSurfaceFormat(attr_surf, SDL_PIXELFORMAT_RGB24, 0);
+	tr->attributeImage = attr_surf2;
+
 	SDL_FreeSurface(surf);
+	SDL_FreeSurface(attr_surf);
 }
 
 void Track_Unload(Track* tr) {
@@ -290,25 +318,19 @@ void DrawFloor() {
 }
 
 typedef struct Sprite {
-	const char* path;
 	SDL_Surface* img;
+	vec3 pos;
 } Sprite;
-List sprites;
 
-int UseSprite(const char* path) {
-	int index = -1;
-	for (int i = 0; i < sprites.len; i++) {
-		if (strcmp(path, ((Sprite*)sprites.data[i])->path) == 0) {
-			index = i;
-			break;
-		}
-	}
+#define MAX_SPRITES 1024
+Sprite sprites[MAX_SPRITES];
+int numSprites = 0;
 
-	if (index != -1) {
-		printf("Found %s\n", path);
-		return index;
+int AddSprite(const char* path) {
+	if (numSprites == MAX_SPRITES) {
+		fprintf(stderr, "Ran out of sprites\n");
+		exit(EXIT_FAILURE);
 	}
-	printf("New: %s\n", path);
 
 	SDL_Surface* surf = IMG_Load(path);
 	if (surf == NULL) {
@@ -316,22 +338,38 @@ int UseSprite(const char* path) {
 		exit(EXIT_FAILURE);
 	}
 
-	Sprite* sprite = malloc(sizeof(Sprite));
-	sprite->path = strdup(path);
-	sprite->img = surf;
-	List_Add(&sprites, sprite);
-
-	return sprites.len - 1;
+	sprites[numSprites].img = surf;
+	return numSprites++;
 }
 
-typedef struct Object {
-	int sprite;
-	vec3 pos;
-} Object;
-List objects;
+void DrawSprites() {
+	Camera* cam = &mainCamera;
 
-void DrawObjects() {
+	// TODO
+	for (int i = 0; i < numSprites; i++) {
+		Sprite* spr = &sprites[i];
+		
+		vec3 pos = vec3_sub(spr->pos, cam->position);
+		mat3 m = {
+			cam->forward.x * cam->cam_dist, cam->right.x * GAME_WIDTH / 2, cam->up.x * GAME_HEIGHT / 2,
+			cam->forward.y * cam->cam_dist, cam->right.y * GAME_WIDTH / 2, cam->up.y * GAME_HEIGHT / 2,
+			cam->forward.z * cam->cam_dist, cam->right.z * GAME_WIDTH / 2, cam->up.z * GAME_HEIGHT / 2,
+		};
+		mat3 m2 = m;
+		mat3_invert(&m);
+		vec3 v = mat3_mul(m, pos);
+		v.y /= v.x;
+		v.z /= v.x;
 
+		int x = mapf(v.y, -1, 1, 0, GAME_WIDTH);
+		int y = mapf(v.z, 1, -1, 0, GAME_HEIGHT);
+
+		SetPixel(x, y, (rgb){255, 255, 255});
+
+		// vec3 v2 = vec3_add(mat3_mul(m2, v), cam->position);
+
+		// printf("%f %f %f\n", v.x, v.y, v.z);
+	}
 }
 
 void UpdateFreeFlyCamera() {
@@ -370,12 +408,64 @@ void UpdateFreeFlyCamera() {
 	if (keyboardState[SDL_SCANCODE_LSHIFT]) {
 		cam->position.z -= flySpeed * global_dt;
 	}
+
+	if (keyboardState[SDL_SCANCODE_I]) {
+		Camera_SetFovX(cam, cam->fov_x + deg2rad(10) * global_dt);
+	}
+	if (keyboardState[SDL_SCANCODE_K]) {
+		Camera_SetFovX(cam, cam->fov_x - deg2rad(10) * global_dt);
+	}
+}
+
+vec2 velocity = {0};
+void UpdateFirstPersonCamera() {
+	const float acceleration = 20;
+	const float turnSpeed = deg2rad(90);
+	
+	Camera* cam = &mainCamera;
+
+	float drag;
+	rgb c = SampleSurface(track.attributeImage, cam->position.x, cam->position.y);
+	if (memcmp(&c, &(rgb){255,0,0}, sizeof(rgb)) == 0) {
+		drag = 5;
+	}
+	else if (memcmp(&c, &(rgb){0,255,0}, sizeof(rgb)) == 0) {
+		// drag = 30;
+	}
+	else {
+		drag = 15;
+	}
+
+	if (keyboardState[SDL_SCANCODE_W]) {
+		velocity.x += cam->forward_2d.x * acceleration * global_dt;
+		velocity.y += cam->forward_2d.y * acceleration * global_dt;
+	}
+	if (keyboardState[SDL_SCANCODE_S]) {
+		velocity.x -= cam->forward_2d.x * acceleration * global_dt;
+		velocity.y -= cam->forward_2d.y * acceleration * global_dt;
+	}
+
+	if (keyboardState[SDL_SCANCODE_A]) {
+		Camera_SetYawPitch(cam, cam->yaw - turnSpeed * global_dt, cam->pitch);
+	}
+	if (keyboardState[SDL_SCANCODE_D]) {
+		Camera_SetYawPitch(cam, cam->yaw + turnSpeed * global_dt, cam->pitch);
+	}
+
+	velocity.x -= drag * velocity.x * global_dt;
+	velocity.y -= drag * velocity.y * global_dt;
+
+	cam->position.x += velocity.x;
+	cam->position.y += velocity.y;
 }
 
 void UpdateCamera() {
 	switch (mainCamera.mode) {
 	case FreeFlyCamera:
 		UpdateFreeFlyCamera();
+		break;
+	case FirstPerson:
+		UpdateFirstPersonCamera();
 		break;
 	default:
 		fprintf(stderr, "Invalid camera mode %d\n", mainCamera.mode);
@@ -422,7 +512,7 @@ void draw() {
 	{
 		// VisualizeRayDirections();
 		DrawFloor();
-		DrawObjects();
+		DrawSprites();
 	}
 	////////////////////
 
@@ -451,17 +541,20 @@ int main() {
 
 	SDL_SetRelativeMouseMode(true);
 
-	mainCamera.position = (vec3){0, 0, 200};
+	// mainCamera.position = (vec3){920, 585, 20};
+	mainCamera.position = (vec3){0, 0, 50};
 	Camera_SetFovX(&mainCamera, deg2rad(90));
-	Camera_SetYawPitch(&mainCamera, 0, 0);
+	Camera_SetYawPitch(&mainCamera, deg2rad(-90), deg2rad(-20));
 	mainCamera.mode = FreeFlyCamera;
 
-	Track_Load(&track, "mario_circuit_1.png");
+	Track_Load(&track, "mario_circuit_1.png", "mario_circuit_1_attributes.png");
 
-	List_Init(&sprites);
-	List_Init(&objects);
+	int sprite = AddSprite("sus.png");
+	sprites[sprite].pos = (vec3){0, 0, 0};
 
-    gameRunning = false;
+	// vec2 v = linear_solve2(5, 3, 6, 7, 2, 7);
+
+    gameRunning = true;
 	frame = 0;
     while (gameRunning) {
 		mousexrel = 0;
