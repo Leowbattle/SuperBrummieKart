@@ -53,6 +53,13 @@ SDL_Texture* frameTexture;
 void* textureData;
 int rowPitch;
 
+void SetPixel(int x, int y, rgb colour) {
+	uint8_t* pixelData = textureData;
+	pixelData[y * rowPitch + x * 3 + 0] = colour.r;
+	pixelData[y * rowPitch + x * 3 + 1] = colour.g;
+	pixelData[y * rowPitch + x * 3 + 2] = colour.b;
+}
+
 bool gameRunning;
 
 typedef struct Camera {
@@ -87,14 +94,6 @@ void Camera_SetFovX(Camera* cam, float fx) {
 	cam->fov_x = fx;
 	cam->fov_y = 2 * atanf(INV_ASPECT_RATIO * tanf(fx / 2));
 	cam->cam_dist = GAME_WIDTH / (2 * tanf(fx / 2));
-
-	// tan(fx/2) = w/(2d)
-	// tan(fy/2) = h/(2d)
-
-	// tan(fx/2)/w = tan(fy/2)/h
-	
-	// fy=2atan(h/w tan(fx/2))
-	// fx = 2atan(w/h tan(fy/2))
 }
 
 void Camera_SetFovY(Camera* cam, float fy) {
@@ -120,10 +119,9 @@ int main(int argc, char** argv) {
 
 	frameTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, GAME_WIDTH, GAME_HEIGHT);
 
-	Camera* cam = &mainCamera;
-	Camera_SetFovX(cam, deg2rad(50));
-
-	printf("%.2f %.2f\n", rad2deg(cam->fov_x), rad2deg(cam->fov_y));
+	mainCamera.position = (vec3){0, 0, 1};
+	Camera_SetFovX(&mainCamera, deg2rad(90));
+	Camera_SetYawPitch(&mainCamera, 0, 0);
 
     gameRunning = true;
     while (gameRunning) {
@@ -148,9 +146,7 @@ int main(int argc, char** argv) {
 		uint8_t* pixelData = textureData;
 		for (int i = 0; i < GAME_HEIGHT; i++) {
 			for (int j = 0; j < GAME_WIDTH; j++) {
-				// pixelData[i * rowPitch + j * 3 + 0] = 255;
-				// pixelData[i * rowPitch + j * 3 + 1] = 255;
-				// pixelData[i * rowPitch + j * 3 + 2] = 255;
+				SetPixel(j, i, (rgb){(uint8_t)(j ^ i), 0, 0});
 			}
 		}
 
