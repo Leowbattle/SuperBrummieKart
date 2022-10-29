@@ -11,6 +11,16 @@
 
 #define GAME_WIDTH 640
 #define GAME_HEIGHT 480
+#define ASPECT_RATIO ((float)GAME_WIDTH / GAME_HEIGHT)
+#define INV_ASPECT_RATIO ((float)GAME_HEIGHT / GAME_WIDTH)
+
+float deg2rad(float deg) {
+	return deg * M_PI / 180;
+}
+
+float rad2deg(float rad) {
+	return rad * 180 / M_PI;
+}
 
 typedef struct rgb {
 	uint8_t r;
@@ -73,12 +83,24 @@ void Camera_SetYawPitch(Camera* cam, float yaw, float pitch) {
 	cam->up = vec3_cross(cam->forward, cam->right);
 }
 
-void Camera_SetFovX(Camera* cam) {
+void Camera_SetFovX(Camera* cam, float fx) {
+	cam->fov_x = fx;
+	cam->fov_y = 2 * atanf(INV_ASPECT_RATIO * tanf(fx / 2));
+	cam->cam_dist = GAME_WIDTH / (2 * tanf(fx / 2));
 
+	// tan(fx/2) = w/(2d)
+	// tan(fy/2) = h/(2d)
+
+	// tan(fx/2)/w = tan(fy/2)/h
+	
+	// fy=2atan(h/w tan(fx/2))
+	// fx = 2atan(w/h tan(fy/2))
 }
 
-void Camera_SetFovY(Camera* cam) {
-
+void Camera_SetFovY(Camera* cam, float fy) {
+	cam->fov_y = fy;
+	cam->fov_x = 2 * atanf(ASPECT_RATIO * tanf(fy / 2));
+	cam->cam_dist = GAME_HEIGHT / (2 * tanf(fy / 2));
 }
 
 Camera mainCamera;
@@ -99,10 +121,9 @@ int main(int argc, char** argv) {
 	frameTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, GAME_WIDTH, GAME_HEIGHT);
 
 	Camera* cam = &mainCamera;
-	Camera_SetYawPitch(cam, 0, 0);
-	for (int i = 0; i < 10; i++) {
-		Camera_SetYawPitch(cam, cam->yaw, cam->pitch + 0.1f);
-	}
+	Camera_SetFovX(cam, deg2rad(50));
+
+	printf("%.2f %.2f\n", rad2deg(cam->fov_x), rad2deg(cam->fov_y));
 
     gameRunning = true;
     while (gameRunning) {
