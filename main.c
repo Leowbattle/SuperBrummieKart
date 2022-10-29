@@ -34,6 +34,16 @@ float mapf(float x, float a1, float b1, float a2, float b2) {
 	return a2 + t * (b2 - a2);
 }
 
+float clampf(float x, float a, float b) {
+	if (x < a) {
+		return a;
+	}
+	if (x > b) {
+		return b;
+	}
+	return x;
+}
+
 typedef struct rgb {
 	uint8_t r;
 	uint8_t g;
@@ -91,6 +101,19 @@ void SetPixel(int x, int y, rgb colour) {
 
 bool gameRunning;
 int frame;
+float globalTime = 0;
+float lastGlobalTime = 0;
+float global_dt = 1.0f / 60;
+
+uint8_t* keyboardState = NULL;
+uint8_t* lastKeyboardState = NULL;
+
+int mousexrel;
+int mouseyrel;
+
+typedef enum CameraMode {
+	FreeFlyCamera
+} CameraMode;
 
 typedef struct Camera {
 	vec3 position;
@@ -103,6 +126,8 @@ typedef struct Camera {
 	float fov_x;
 	float fov_y;
 	float cam_dist;
+
+	CameraMode mode;
 } Camera;
 
 void Camera_SetYawPitch(Camera* cam, float yaw, float pitch) {
@@ -204,9 +229,6 @@ void DrawFloor() {
 			int tx = (int)fx & mask;
 			int ty = (int)fy & mask;
 
-			// printf("%x %d %d\n", mask, tx, ty);
-			// exit(EXIT_FAILURE);
-
 			SDL_Surface* surf = track.trackImage;
 			uint8_t* pixelData = surf->pixels;
 			uint8_t r = pixelData[ty * surf->pitch + tx * 3 + 0];
@@ -216,6 +238,103 @@ void DrawFloor() {
 			SetPixel(j, i, (rgb){r, g, b});
 		}
 	}
+}
+
+void UpdateFreeFlyCamera() {
+	const float flySpeed = 200;
+	const float mouseSensitivity = 1;
+
+	Camera* cam = &mainCamera;
+
+	float newYaw = cam->yaw + mousexrel * mouseSensitivity * global_dt;
+	float newPitch = cam->pitch - mouseyrel * mouseSensitivity * global_dt;
+
+	newPitch = clampf(newPitch, -M_PI_2, M_PI_2);
+
+	Camera_SetYawPitch(cam, newYaw, newPitch);
+
+	if (keyboardState[SDL_SCANCODE_W]) {
+		cam->position.x += cam->forward_2d.x * flySpeed * global_dt;
+		cam->position.y += cam->forward_2d.y * flySpeed * global_dt;
+	}
+	if (keyboardState[SDL_SCANCODE_S]) {
+		cam->position.x -= cam->forward_2d.x * flySpeed * global_dt;
+		cam->position.y -= cam->forward_2d.y * flySpeed * global_dt;
+	}
+	if (keyboardState[SDL_SCANCODE_D]) {
+		cam->position.x += cam->right.x * flySpeed * global_dt;
+		cam->position.y += cam->right.y * flySpeed * global_dt;
+	}
+	if (keyboardState[SDL_SCANCODE_A]) {
+		cam->position.x -= cam->right.x * flySpeed * global_dt;
+		cam->position.y -= cam->right.y * flySpeed * global_dt;
+	}
+
+	if (keyboardState[SDL_SCANCODE_SPACE]) {
+		cam->position.z += flySpeed * global_dt;
+	}
+	if (keyboardState[SDL_SCANCODE_LSHIFT]) {
+		cam->position.z -= flySpeed * global_dt;
+	}
+}
+
+void UpdateCamera() {
+	switch (mainCamera.mode) {
+	case FreeFlyCamera:
+		UpdateFreeFlyCamera();
+		break;
+	default:
+		fprintf(stderr, "Invalid camera mode %d\n", mainCamera.mode);
+		exit(EXIT_FAILURE);
+	}
+}
+
+void updateKeyboard() {
+	int numKeys;
+	const uint8_t* kb = SDL_GetKeyboardState(&numKeys);
+
+	if (keyboardState == NULL) {
+		keyboardState = malloc(numKeys);
+		lastKeyboardState = malloc(numKeys);
+	}
+
+	memcpy(lastKeyboardState, keyboardState, numKeys);
+	memcpy(keyboardState, kb, numKeys);
+}
+
+void update() {
+	lastGlobalTime = globalTime;
+	globalTime += global_dt;
+
+	updateKeyboard();
+
+	UpdateCamera();
+}
+
+void draw() {
+	////////////////////
+	// Prepare draw
+
+	// Clear screen
+	SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+	SDL_RenderClear(renderer);
+
+	// Get pointer to pixel data for frame
+	SDL_LockTexture(frameTexture, NULL, &textureData, &rowPitch);
+	memset(textureData, 127, rowPitch * GAME_HEIGHT);
+
+	////////////////////
+	// Actual drawing
+	{
+		// VisualizeRayDirections();
+		DrawFloor();
+	}
+	////////////////////
+
+	// Present frame
+	SDL_UnlockTexture(frameTexture);
+	SDL_RenderCopy(renderer, frameTexture, NULL, NULL);
+	SDL_RenderPresent(renderer);
 }
 
 int main() {
@@ -235,15 +354,21 @@ int main() {
 
 	frameTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, GAME_WIDTH, GAME_HEIGHT);
 
-	mainCamera.position = (vec3){0, 0, 1};
+	SDL_SetRelativeMouseMode(true);
+
+	mainCamera.position = (vec3){0, 0, 200};
 	Camera_SetFovX(&mainCamera, deg2rad(90));
 	Camera_SetYawPitch(&mainCamera, 0, 0);
+	mainCamera.mode = FreeFlyCamera;
 
 	Track_Load(&track, "mario_circuit_1.png");
 
     gameRunning = true;
 	frame = 0;
     while (gameRunning) {
+		mousexrel = 0;
+		mouseyrel = 0;
+
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
@@ -251,28 +376,24 @@ int main() {
 				gameRunning = false; 
                 break;
 
+			case SDL_KEYDOWN:
+				if (ev.key.keysym.sym == SDLK_ESCAPE) {
+					gameRunning = false;
+				}
+				break;
+
+			case SDL_MOUSEMOTION:
+				mousexrel = ev.motion.xrel;
+				mouseyrel = ev.motion.yrel;
+				break;
+
             default:
                 break;
             }
         }
 
-		mainCamera.position.z = 100;
-		Camera_SetYawPitch(&mainCamera, deg2rad(frame / 3.0f), deg2rad(-20));
-
-		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
-		SDL_RenderClear(renderer);
-
-		SDL_LockTexture(frameTexture, NULL, &textureData, &rowPitch);
-		memset(textureData, 127, rowPitch * GAME_HEIGHT);
-
-		// VisualizeRayDirections();
-		DrawFloor();
-
-		SDL_UnlockTexture(frameTexture);
-
-		SDL_RenderCopy(renderer, frameTexture, NULL, NULL);
-
-		SDL_RenderPresent(renderer);
+		update();
+		draw();
 
 		frame++;
     }
