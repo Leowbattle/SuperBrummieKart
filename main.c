@@ -342,6 +342,26 @@ int AddSprite(const char* path) {
 	return numSprites++;
 }
 
+vec2 ProjectPoint(vec3 p) {
+	Camera* cam = &mainCamera;
+
+	p = vec3_sub(p, cam->position);
+	mat3 m = {
+		cam->forward.x * cam->cam_dist, cam->right.x * GAME_WIDTH / 2, cam->up.x * GAME_HEIGHT / 2,
+		cam->forward.y * cam->cam_dist, cam->right.y * GAME_WIDTH / 2, cam->up.y * GAME_HEIGHT / 2,
+		cam->forward.z * cam->cam_dist, cam->right.z * GAME_WIDTH / 2, cam->up.z * GAME_HEIGHT / 2,
+	};
+	mat3_invert(&m);
+	vec3 v = mat3_mul(m, p);
+	v.y /= v.x;
+	v.z /= v.x;
+
+	return (vec2){
+		mapf(v.y, -1, 1, 0, GAME_WIDTH),
+		mapf(v.z, 1, -1, 0, GAME_HEIGHT)
+	};
+}
+
 void DrawSprites() {
 	Camera* cam = &mainCamera;
 
@@ -349,26 +369,21 @@ void DrawSprites() {
 	for (int i = 0; i < numSprites; i++) {
 		Sprite* spr = &sprites[i];
 		
-		vec3 pos = vec3_sub(spr->pos, cam->position);
-		mat3 m = {
-			cam->forward.x * cam->cam_dist, cam->right.x * GAME_WIDTH / 2, cam->up.x * GAME_HEIGHT / 2,
-			cam->forward.y * cam->cam_dist, cam->right.y * GAME_WIDTH / 2, cam->up.y * GAME_HEIGHT / 2,
-			cam->forward.z * cam->cam_dist, cam->right.z * GAME_WIDTH / 2, cam->up.z * GAME_HEIGHT / 2,
-		};
-		mat3 m2 = m;
-		mat3_invert(&m);
-		vec3 v = mat3_mul(m, pos);
-		v.y /= v.x;
-		v.z /= v.x;
+		vec3 left3 = vec3_sub(spr->pos, vec3_scale(cam->right, spr->img->w));
+		vec3 right3 = vec3_add(spr->pos, vec3_scale(cam->right, spr->img->w));
 
-		int x = mapf(v.y, -1, 1, 0, GAME_WIDTH);
-		int y = mapf(v.z, 1, -1, 0, GAME_HEIGHT);
+		vec2 left = ProjectPoint(left3);
+		vec2 right = ProjectPoint(right3);
 
-		SetPixel(x, y, (rgb){255, 255, 255});
+		for (int x = left.x; x < right.x; x++) {
+			SetPixel(x, left.y, (rgb){255, 255, 255});
+		}
 
-		// vec3 v2 = vec3_add(mat3_mul(m2, v), cam->position);
+		// vec2 p = ProjectPoint(spr->pos);
+		// int x = p.x;
+		// int y = p.y;
 
-		// printf("%f %f %f\n", v.x, v.y, v.z);
+		// SetPixel(x, y, (rgb){255, 255, 255});
 	}
 }
 
