@@ -8,11 +8,18 @@
 #include <math.h>
 
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_image.h>
+#include <SDL2/SDL_ttf.h>
 
-#define GAME_WIDTH 640
-#define GAME_HEIGHT 480
+#define GAME_WIDTH 1280
+#define GAME_HEIGHT 720
 #define ASPECT_RATIO ((float)GAME_WIDTH / GAME_HEIGHT)
 #define INV_ASPECT_RATIO ((float)GAME_HEIGHT / GAME_WIDTH)
+
+// https://stackoverflow.com/questions/600293/how-to-check-if-a-number-is-a-power-of-2
+bool IsPowerOfTwo(int x) {
+    return (x != 0) && ((x & (x - 1)) == 0);
+}
 
 float deg2rad(float deg) {
 	return deg * M_PI / 180;
@@ -83,6 +90,7 @@ void SetPixel(int x, int y, rgb colour) {
 }
 
 bool gameRunning;
+int frame;
 
 typedef struct Camera {
 	vec3 position;
@@ -124,10 +132,96 @@ void Camera_SetFovY(Camera* cam, float fy) {
 	cam->cam_dist = GAME_HEIGHT / (2 * tanf(fy / 2));
 }
 
+typedef struct Track {
+	SDL_Surface* trackImage;
+	int size_log2;
+} Track;
+
+void Track_Load(Track* tr, const char* path) {
+	SDL_Surface* surf = IMG_Load(path);
+	if (surf == NULL) {
+		fprintf(stderr, "Unable to load track: %s\n", IMG_GetError());
+		exit(EXIT_FAILURE);
+	}
+
+	if (surf->w != surf->h || !IsPowerOfTwo(surf->w)) {
+		fprintf(stderr, "Invalid track size: %dx%d. Track width and height must be the same and a power of 2.\n", surf->w, surf->h);
+	}
+
+	int size_log2 = log2f(surf->w);
+
+	SDL_Surface* surf2 = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGB24, 0);
+	tr->trackImage = surf2;
+	tr->size_log2 = size_log2;
+	SDL_FreeSurface(surf);
+}
+
+void Track_Unload(Track* tr) {
+	SDL_FreeSurface(tr->trackImage);
+}
+
 Camera mainCamera;
+Track track;
+
+void VisualizeRayDirections() {
+	for (int i = 0; i < GAME_HEIGHT; i++) {
+		for (int j = 0; j < GAME_WIDTH; j++) {
+			float x = mapf(j, 0, GAME_WIDTH, -1, 1);
+			float y = mapf(i, 0, GAME_HEIGHT, 1, -1);
+
+			vec3 dir = vec3_scale(vec3_normalize(vec3_add(
+				vec3_scale(mainCamera.forward, mainCamera.cam_dist), 
+				vec3_add(vec3_scale(mainCamera.right, x * GAME_WIDTH / 2), vec3_scale(mainCamera.up, y * GAME_HEIGHT / 2)))), 255);
+
+			// SetPixel(j, i, (rgb){(uint8_t)(j ^ i), 0, 0});
+			SetPixel(j, i, (rgb){fabsf(dir.x), fabsf(dir.y), fabsf(dir.z)});
+		}
+	}
+}
+
+void DrawFloor() {
+	vec3 pos = mainCamera.position;
+
+	for (int i = 0; i < GAME_HEIGHT; i++) {
+		for (int j = 0; j < GAME_WIDTH; j++) {
+			float x = mapf(j, 0, GAME_WIDTH, -1, 1);
+			float y = mapf(i, 0, GAME_HEIGHT, 1, -1);
+
+			vec3 dir = vec3_add(
+				vec3_scale(mainCamera.forward, mainCamera.cam_dist), 
+				vec3_add(vec3_scale(mainCamera.right, x * GAME_WIDTH / 2), vec3_scale(mainCamera.up, y * GAME_HEIGHT / 2)));
+
+			float t = -pos.z / dir.z;
+
+			if (t < 0) {
+				continue;
+			}
+
+			float fx = pos.x + t * dir.x;
+			float fy = pos.y + t * dir.y;
+
+			int mask = (1 << track.size_log2) - 1;
+			int tx = (int)fx & mask;
+			int ty = (int)fy & mask;
+
+			// printf("%x %d %d\n", mask, tx, ty);
+			// exit(EXIT_FAILURE);
+
+			SDL_Surface* surf = track.trackImage;
+			uint8_t* pixelData = surf->pixels;
+			uint8_t r = pixelData[ty * surf->pitch + tx * 3 + 0];
+			uint8_t g = pixelData[ty * surf->pitch + tx * 3 + 1];
+			uint8_t b = pixelData[ty * surf->pitch + tx * 3 + 2];
+
+			SetPixel(j, i, (rgb){r, g, b});
+		}
+	}
+}
 
 int main() {
     SDL_Init(SDL_INIT_EVERYTHING);
+	IMG_Init(IMG_INIT_PNG);
+	TTF_Init();
 
     SDL_version sdlVersion;
     SDL_GetVersion(&sdlVersion);
@@ -145,7 +239,10 @@ int main() {
 	Camera_SetFovX(&mainCamera, deg2rad(90));
 	Camera_SetYawPitch(&mainCamera, 0, 0);
 
+	Track_Load(&track, "mario_circuit_1.png");
+
     gameRunning = true;
+	frame = 0;
     while (gameRunning) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
@@ -159,7 +256,8 @@ int main() {
             }
         }
 
-		Camera_SetYawPitch(&mainCamera, mainCamera.yaw + 0.1f, mainCamera.pitch + 0.1f);
+		mainCamera.position.z = 100;
+		Camera_SetYawPitch(&mainCamera, deg2rad(frame / 3.0f), deg2rad(-20));
 
 		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
 		SDL_RenderClear(renderer);
@@ -167,25 +265,16 @@ int main() {
 		SDL_LockTexture(frameTexture, NULL, &textureData, &rowPitch);
 		memset(textureData, 127, rowPitch * GAME_HEIGHT);
 
-		for (int i = 0; i < GAME_HEIGHT; i++) {
-			for (int j = 0; j < GAME_WIDTH; j++) {
-				float x = mapf(j, 0, GAME_WIDTH, -1, 1);
-				float y = mapf(i, 0, GAME_HEIGHT, 1, -1);
-
-				vec3 dir = vec3_scale(vec3_normalize(vec3_add(
-					vec3_scale(mainCamera.forward, mainCamera.cam_dist), 
-					vec3_add(vec3_scale(mainCamera.right, x * GAME_WIDTH / 2), vec3_scale(mainCamera.up, y * GAME_HEIGHT / 2)))), 255);
-
-				// SetPixel(j, i, (rgb){(uint8_t)(j ^ i), 0, 0});
-				SetPixel(j, i, (rgb){fabsf(dir.x), fabsf(dir.y), fabsf(dir.z)});
-			}
-		}
+		// VisualizeRayDirections();
+		DrawFloor();
 
 		SDL_UnlockTexture(frameTexture);
 
 		SDL_RenderCopy(renderer, frameTexture, NULL, NULL);
 
 		SDL_RenderPresent(renderer);
+
+		frame++;
     }
 
     return 0;
