@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <string.h>
 #include <math.h>
@@ -43,6 +44,54 @@ float clampf(float x, float a, float b) {
 	}
 	return x;
 }
+
+typedef struct List {
+	void** data;
+	size_t len;
+	size_t capacity;
+} List;
+
+void List_Init(List* list) {
+	list->data = NULL;
+	list->len = 0;
+	list->capacity = 0;
+}
+
+void List_Deinit(List* list) {
+	if (list->data != NULL) {
+		free(list->data);
+	}
+
+	list->data = NULL;
+	list->len = 0;
+	list->capacity = 0;
+}
+
+void List_Add(List* list, void* item) {
+	if (list->data == NULL) {
+		list->capacity = 4;
+		list->data = malloc(list->capacity * sizeof(void*));
+	}
+
+	if (list->len >= list->capacity) {
+		list->capacity *= 2;
+		list->data = realloc(list->data, list->capacity * sizeof(void*));
+	}
+
+	list->data[list->len] = item;
+	list->len++;
+}
+
+// typedef int (*List_Comparer)(void* item, void* userdata);
+
+// int List_Search(List* list, List_Comparer comparer, void* userdata) {
+// 	for (int i = 0; i < list->len; i++) {
+// 		if (comparer(list->data[i], userdata) == 0) {
+// 			return i;
+// 		}
+// 	}
+// 	return -1;
+// }
 
 typedef struct rgb {
 	uint8_t r;
@@ -240,6 +289,51 @@ void DrawFloor() {
 	}
 }
 
+typedef struct Sprite {
+	const char* path;
+	SDL_Surface* img;
+} Sprite;
+List sprites;
+
+int UseSprite(const char* path) {
+	int index = -1;
+	for (int i = 0; i < sprites.len; i++) {
+		if (strcmp(path, ((Sprite*)sprites.data[i])->path) == 0) {
+			index = i;
+			break;
+		}
+	}
+
+	if (index != -1) {
+		printf("Found %s\n", path);
+		return index;
+	}
+	printf("New: %s\n", path);
+
+	SDL_Surface* surf = IMG_Load(path);
+	if (surf == NULL) {
+		fprintf(stderr, "Unable to load sprite: %s\n", IMG_GetError());
+		exit(EXIT_FAILURE);
+	}
+
+	Sprite* sprite = malloc(sizeof(Sprite));
+	sprite->path = strdup(path);
+	sprite->img = surf;
+	List_Add(&sprites, sprite);
+
+	return sprites.len - 1;
+}
+
+typedef struct Object {
+	int sprite;
+	vec3 pos;
+} Object;
+List objects;
+
+void DrawObjects() {
+
+}
+
 void UpdateFreeFlyCamera() {
 	const float flySpeed = 200;
 	const float mouseSensitivity = 1;
@@ -328,6 +422,7 @@ void draw() {
 	{
 		// VisualizeRayDirections();
 		DrawFloor();
+		DrawObjects();
 	}
 	////////////////////
 
@@ -363,7 +458,10 @@ int main() {
 
 	Track_Load(&track, "mario_circuit_1.png");
 
-    gameRunning = true;
+	List_Init(&sprites);
+	List_Init(&objects);
+
+    gameRunning = false;
 	frame = 0;
     while (gameRunning) {
 		mousexrel = 0;
