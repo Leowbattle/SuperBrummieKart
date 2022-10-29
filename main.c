@@ -22,6 +22,11 @@ float rad2deg(float rad) {
 	return rad * 180 / M_PI;
 }
 
+float mapf(float x, float a1, float b1, float a2, float b2) {
+	float t = (x - a1) / (b1 - a1);
+	return a2 + t * (b2 - a2);
+}
+
 typedef struct rgb {
 	uint8_t r;
 	uint8_t g;
@@ -38,6 +43,18 @@ typedef struct vec3 {
 	float y;
 	float z;
 } vec3;
+
+vec3 vec3_add(vec3 a, vec3 b) {
+	return (vec3){a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+vec3 vec3_scale(vec3 a, float s) {
+	return (vec3){a.x * s, a.y * s, a.z * s};
+}
+
+float vec3_dot(vec3 a, vec3 b) {
+	return a.x * b.x + a.y * b.y + a.z * b.z;
+}
 
 vec3 vec3_cross(vec3 a, vec3 b) {
 	return (vec3){
@@ -104,7 +121,7 @@ void Camera_SetFovY(Camera* cam, float fy) {
 
 Camera mainCamera;
 
-int main(int argc, char** argv) {
+int main() {
     SDL_Init(SDL_INIT_EVERYTHING);
 
     SDL_version sdlVersion;
@@ -137,16 +154,23 @@ int main(int argc, char** argv) {
             }
         }
 
+		Camera_SetYawPitch(&mainCamera, mainCamera.yaw + 0.1f, mainCamera.pitch + 0.1f);
+
 		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
 		SDL_RenderClear(renderer);
 
-		SDL_LockTexture(frameTexture, NULL, (void**)&textureData, &rowPitch);
-		// All rendering must be in here
+		SDL_LockTexture(frameTexture, NULL, &textureData, &rowPitch);
 		memset(textureData, 127, rowPitch * GAME_HEIGHT);
-		uint8_t* pixelData = textureData;
+
 		for (int i = 0; i < GAME_HEIGHT; i++) {
 			for (int j = 0; j < GAME_WIDTH; j++) {
-				SetPixel(j, i, (rgb){(uint8_t)(j ^ i), 0, 0});
+				float x = mapf(j, 0, GAME_WIDTH, -1, 1);
+				float y = mapf(i, 0, GAME_HEIGHT, 1, -1);
+
+				vec3 dir = vec3_scale(vec3_add(mainCamera.forward, vec3_add(vec3_scale(mainCamera.right, x), vec3_scale(mainCamera.up, y))), 100);
+
+				// SetPixel(j, i, (rgb){(uint8_t)(j ^ i), 0, 0});
+				SetPixel(j, i, (rgb){fabsf(dir.x), fabsf(dir.y), fabsf(dir.z)});
 			}
 		}
 
