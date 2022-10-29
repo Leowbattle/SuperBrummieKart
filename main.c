@@ -30,7 +30,7 @@ typedef struct vec3 {
 SDL_Window* window;
 SDL_Renderer* renderer;
 SDL_Texture* frameTexture;
-uint8_t* pixelData;
+void* textureData;
 int rowPitch;
 
 bool gameRunning;
@@ -42,10 +42,13 @@ int main(int argc, char** argv) {
     SDL_GetVersion(&sdlVersion);
     printf("SDL Version: %d.%d.%d\n", sdlVersion.major, sdlVersion.minor, sdlVersion.patch);
     
-    window = SDL_CreateWindow("HackTheMidlands", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, GAME_WIDTH, GAME_HEIGHT, SDL_WINDOW_SHOWN | SDL_WINDOW_ALWAYS_ON_TOP);
+    window = SDL_CreateWindow("HackTheMidlands", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, GAME_WIDTH, GAME_HEIGHT, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALWAYS_ON_TOP);
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_ACCELERATED);
 
-	frameTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, GAME_WIDTH, GAME_HEIGHT);
+	SDL_RenderSetLogicalSize(renderer, GAME_WIDTH, GAME_HEIGHT);
+	SDL_RenderSetIntegerScale(renderer, true);
+
+	frameTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, GAME_WIDTH, GAME_HEIGHT);
 
     gameRunning = true;
     while (gameRunning) {
@@ -64,9 +67,13 @@ int main(int argc, char** argv) {
 		SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
 		SDL_RenderClear(renderer);
 
-		SDL_LockTexture(frameTexture, NULL, (void**)&pixelData, &rowPitch);
+		SDL_LockTexture(frameTexture, NULL, (void**)&textureData, &rowPitch);
 		// All rendering must be in here
-		memset(pixelData, 127, rowPitch * GAME_HEIGHT);
+		memset(textureData, 127, rowPitch * GAME_HEIGHT);
+		rgb* pixelData = textureData;
+		for (int i = 0; i < GAME_WIDTH; i++) {
+			pixelData[i] = (rgb){255, 0, 0};
+		}
 
 		SDL_UnlockTexture(frameTexture);
 
