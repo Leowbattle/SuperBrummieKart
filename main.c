@@ -70,9 +70,11 @@ int main(int argc, char** argv) {
 		SDL_LockTexture(frameTexture, NULL, (void**)&textureData, &rowPitch);
 		// All rendering must be in here
 		memset(textureData, 127, rowPitch * GAME_HEIGHT);
-		rgb* pixelData = textureData;
-		for (int i = 0; i < GAME_WIDTH; i++) {
-			pixelData[i] = (rgb){255, 0, 0};
+		uint8_t* pixelData = textureData;
+		for (int i = 0; i < GAME_HEIGHT; i++) {
+			for (int j = 0; j < GAME_WIDTH; j++) {
+				pixelData[i * rowPitch + j * 3] = 255;
+			}
 		}
 
 		SDL_UnlockTexture(frameTexture);
