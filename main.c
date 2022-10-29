@@ -73,7 +73,9 @@ int main(int argc, char** argv) {
 		uint8_t* pixelData = textureData;
 		for (int i = 0; i < GAME_HEIGHT; i++) {
 			for (int j = 0; j < GAME_WIDTH; j++) {
-				pixelData[i * rowPitch + j * 3] = 255;
+				// pixelData[i * rowPitch + j * 3 + 0] = 255;
+				// pixelData[i * rowPitch + j * 3 + 1] = 255;
+				// pixelData[i * rowPitch + j * 3 + 2] = 255;
 			}
 		}
 
