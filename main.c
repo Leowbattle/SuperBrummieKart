@@ -154,10 +154,12 @@ void* textureData;
 int rowPitch;
 
 void SetPixel(int x, int y, rgb colour) {
-	uint8_t* pixelData = textureData;
-	pixelData[y * rowPitch + x * 3 + 0] = colour.r;
-	pixelData[y * rowPitch + x * 3 + 1] = colour.g;
-	pixelData[y * rowPitch + x * 3 + 2] = colour.b;
+	if (x > 0 && x < GAME_WIDTH && y > 0 && y < GAME_HEIGHT) {
+		uint8_t* pixelData = textureData;
+		pixelData[y * rowPitch + x * 3 + 0] = colour.r;
+		pixelData[y * rowPitch + x * 3 + 1] = colour.g;
+		pixelData[y * rowPitch + x * 3 + 2] = colour.b;
+	}
 }
 
 bool gameRunning;
@@ -369,21 +371,27 @@ void DrawSprites() {
 	for (int i = 0; i < numSprites; i++) {
 		Sprite* spr = &sprites[i];
 		
-		vec3 left3 = vec3_sub(spr->pos, vec3_scale(cam->right, spr->img->w));
-		vec3 right3 = vec3_add(spr->pos, vec3_scale(cam->right, spr->img->w));
+		vec3 left3 = vec3_sub(spr->pos, vec3_scale(cam->right, spr->img->w/2));
+		vec3 right3 = vec3_add(spr->pos, vec3_scale(cam->right, spr->img->w/2));
+
+		vec3 top3 = vec3_add(spr->pos, vec3_scale(cam->up, spr->img->h));
 
 		vec2 left = ProjectPoint(left3);
 		vec2 right = ProjectPoint(right3);
+		vec2 top = ProjectPoint(top3);
 
-		for (int x = left.x; x < right.x; x++) {
-			SetPixel(x, left.y, (rgb){255, 255, 255});
+		for (int y = top.y; y < left.y; y++) {
+			for (int x = left.x; x < right.x; x++) {
+				// SetPixel(x, y, (rgb){255, 255, 255});
+				int tx = mapf(x, left.x, right.x, 0, spr->img->w);
+				int ty = mapf(y, top.y, left.y, 0, spr->img->h);
+				rgb c = SampleSurface(spr->img, tx, ty);
+				if (c.r == 255 && c.b == 255) {
+					continue;
+				}
+				SetPixel(x, y, c);
+			}
 		}
-
-		// vec2 p = ProjectPoint(spr->pos);
-		// int x = p.x;
-		// int y = p.y;
-
-		// SetPixel(x, y, (rgb){255, 255, 255});
 	}
 }
 
@@ -546,7 +554,7 @@ int main() {
     SDL_GetVersion(&sdlVersion);
     printf("SDL Version: %d.%d.%d\n", sdlVersion.major, sdlVersion.minor, sdlVersion.patch);
     
-    window = SDL_CreateWindow("HackTheMidlands", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, GAME_WIDTH, GAME_HEIGHT, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALWAYS_ON_TOP);
+    window = SDL_CreateWindow("HackTheMidlands", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, GAME_WIDTH, GAME_HEIGHT, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_ACCELERATED);
 
 	SDL_RenderSetLogicalSize(renderer, GAME_WIDTH, GAME_HEIGHT);
@@ -565,7 +573,7 @@ int main() {
 	Track_Load(&track, "mario_circuit_1.png", "mario_circuit_1_attributes.png");
 
 	int sprite = AddSprite("sus.png");
-	sprites[sprite].pos = (vec3){0, 0, 0};
+	sprites[sprite].pos = (vec3){100, 100, 0};
 
 	// vec2 v = linear_solve2(5, 3, 6, 7, 2, 7);
 
