@@ -45,6 +45,10 @@ float clampf(float x, float a, float b) {
 	return x;
 }
 
+float lerpf(float a, float b, float t) {
+	return a + (b - a) * t;
+}
+
 typedef struct rgb {
 	uint8_t r;
 	uint8_t g;
@@ -69,6 +73,11 @@ vec2 vec2_scale(vec2 a, float s) {
 
 float vec2_dot(vec2 a, vec2 b) {
 	return a.x * b.x + a.y * b.y;
+}
+
+vec2 vec2_normalize(vec2 a) {
+	float m = sqrtf(a.x * a.x + a.y * a.y);
+	return (vec2){a.x / m, a.y / m};
 }
 
 typedef struct vec3 {
@@ -154,9 +163,15 @@ vec3 mat3_mul(mat3 m, vec3 v) {
 	};
 }
 
+#define MAX_SPRITE_ANGLES 16
+
 typedef struct Sprite {
 	SDL_Surface* img;
+	int numAngles;
+	int w;
+	int h;
 	vec3 pos;
+	float angle;
 } Sprite;
 
 #define MAX_SPRITES 1024
@@ -369,6 +384,28 @@ int AddSprite(const char* path) {
 	}
 
 	sprites[numSprites].img = surf;
+	sprites[numSprites].numAngles = 1;
+	sprites[numSprites].w = surf->w;
+	sprites[numSprites].h = surf->h;
+	return numSprites++;
+}
+
+int AddSpriteRotations(const char* path) {
+	if (numSprites == MAX_SPRITES) {
+		fprintf(stderr, "Ran out of sprites\n");
+		exit(EXIT_FAILURE);
+	}
+
+	SDL_Surface* surf = IMG_Load(path);
+	if (surf == NULL) {
+		fprintf(stderr, "Unable to load sprite: %s\n", IMG_GetError());
+		exit(EXIT_FAILURE);
+	}
+
+	sprites[numSprites].img = surf;
+	sprites[numSprites].numAngles = surf->w / surf->h;
+	sprites[numSprites].w = surf->h;
+	sprites[numSprites].h = surf->h;
 	return numSprites++;
 }
 
@@ -410,6 +447,8 @@ int cmp_sprites(const void* a, const void* b) {
 }
 
 void DrawSprites() {
+	// TODO: Fix sprite rotations
+
 	Camera* cam = &mainCamera;
 
 	qsort(sprites, numSprites, sizeof(Sprite), cmp_sprites);
@@ -417,18 +456,38 @@ void DrawSprites() {
 	for (int i = 0; i < numSprites; i++) {
 		Sprite* spr = &sprites[i];
 
-		vec3 left3 = vec3_sub(spr->pos, vec3_scale(cam->right, spr->img->w/2.0f));
-		vec3 right3 = vec3_add(spr->pos, vec3_scale(cam->right, spr->img->w/2.0f));
+		int rotationIndex = 0;
+		bool flipX = false;
+		if (spr->numAngles > 1) {
+			// Select which sprite
+			//rotationIndex = (frame / 10) % spr->numAngles;
 
-		vec3 top3 = vec3_add(spr->pos, vec3_scale(cam->up, spr->img->h));
+			vec2 diff = (vec2){spr->pos.x - cam->position.x, spr->pos.y - cam->position.y};
+			vec2 right = (vec2){cam->right.x, cam->right.y};
+
+			float theta = spr->angle - cam->yaw - atanf(GAME_WIDTH/(2*cam->cam_dist)* vec2_dot(diff, right) / vec2_dot(diff, cam->forward_2d));
+			// printf("%f\n", theta);
+			if (theta < 0) {
+				flipX = true;
+				theta = -theta;
+			}
+			rotationIndex = mapf(theta, 0, M_PI, 0, spr->numAngles);
+			rotationIndex %= spr->numAngles * 2;
+			if (rotationIndex > spr->numAngles) {
+				rotationIndex = rotationIndex - spr->numAngles;
+				flipX = true;
+			}
+			printf("%d\n", rotationIndex);
+		}
+
+		vec3 left3 = vec3_sub(spr->pos, vec3_scale(cam->right, spr->w/2.0f));
+		vec3 right3 = vec3_add(spr->pos, vec3_scale(cam->right, spr->w/2.0f));
+
+		vec3 top3 = vec3_add(spr->pos, vec3_scale(cam->up, spr->h));
 
 		vec2 left = ProjectPoint(left3);
 		vec2 right = ProjectPoint(right3);
 		vec2 top = ProjectPoint(top3);
-
-		// if (left.x > GAME_WIDTH || right.x < 0 || top.y > GAME_HEIGHT || left.y < 0) {
-		// 	continue;
-		// }
 
 		int leftx = clampf(left.x, 0, GAME_WIDTH);
 		int rightx = clampf(right.x, 0, GAME_WIDTH);
@@ -438,8 +497,14 @@ void DrawSprites() {
 
 		for (int y = topy; y < bottomy; y++) {
 			for (int x = leftx; x < rightx; x++) {
-				int tx = mapf(x, left.x, right.x, 0, spr->img->w);
-				int ty = mapf(y, top.y, left.y, 0, spr->img->h);
+				int tx;
+				if (flipX) {
+					tx = mapf(x, right.x, left.x, 0, spr->w) + spr->w * rotationIndex;
+				}
+				else {
+					tx = mapf(x, left.x, right.x, 0, spr->w) + spr->w * rotationIndex;
+				}
+				int ty = mapf(y, top.y, left.y, 0, spr->h);
 				rgba c = SampleSurface_rgba(spr->img, tx, ty);
 				if (c.a < 1) {
 					continue;
@@ -619,13 +684,17 @@ int main() {
 
 	SDL_SetRelativeMouseMode(true);
 
-	mainCamera.position = (vec3){920, 585, 20};
+	mainCamera.position = (vec3){920, 585, 10};
 	// mainCamera.position = (vec3){200, 200, 50};
 	Camera_SetFovX(&mainCamera, deg2rad(90));
 	Camera_SetYawPitch(&mainCamera, deg2rad(-90), deg2rad(-20));
 	mainCamera.mode = FreeFlyCamera;
 
 	Track_Load(&track, "mario_circuit_1.png", "mario_circuit_1_attributes.png");
+
+	int bowser = AddSpriteRotations("bowser.png");
+	sprites[bowser].pos = (vec3){920, 485, 0};
+	sprites[bowser].angle = deg2rad(-90);
 
     gameRunning = true;
 	frame = 0;
