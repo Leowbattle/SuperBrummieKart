@@ -12,8 +12,8 @@
 #include <SDL2/SDL_image.h>
 #include <SDL2/SDL_ttf.h>
 
-#define GAME_WIDTH 1280
-#define GAME_HEIGHT 720
+#define GAME_WIDTH 640
+#define GAME_HEIGHT 360
 #define ASPECT_RATIO ((float)GAME_WIDTH / GAME_HEIGHT)
 #define INV_ASPECT_RATIO ((float)GAME_HEIGHT / GAME_WIDTH)
 
@@ -348,6 +348,118 @@ void VisualizeRayDirections() {
 	}
 }
 
+// https://en.wikipedia.org/wiki/Cube_mapping
+void convert_xyz_to_cube_uv(float x, float y, float z, int *index, float *u, float *v)
+{
+  float absX = fabs(x);
+  float absY = fabs(y);
+  float absZ = fabs(z);
+  
+  int isXPositive = x > 0 ? 1 : 0;
+  int isYPositive = y > 0 ? 1 : 0;
+  int isZPositive = z > 0 ? 1 : 0;
+  
+  float maxAxis, uc, vc;
+  
+  // POSITIVE X
+  if (isXPositive && absX >= absY && absX >= absZ) {
+    // u (0 to 1) goes from +z to -z
+    // v (0 to 1) goes from -y to +y
+    maxAxis = absX;
+    uc = -z;
+    vc = y;
+    *index = 0;
+  }
+  // NEGATIVE X
+  if (!isXPositive && absX >= absY && absX >= absZ) {
+    // u (0 to 1) goes from -z to +z
+    // v (0 to 1) goes from -y to +y
+    maxAxis = absX;
+    uc = z;
+    vc = y;
+    *index = 1;
+  }
+  // POSITIVE Y
+  if (isYPositive && absY >= absX && absY >= absZ) {
+    // u (0 to 1) goes from -x to +x
+    // v (0 to 1) goes from +z to -z
+    maxAxis = absY;
+    uc = x;
+    vc = -z;
+    *index = 2;
+  }
+  // NEGATIVE Y
+  if (!isYPositive && absY >= absX && absY >= absZ) {
+    // u (0 to 1) goes from -x to +x
+    // v (0 to 1) goes from -z to +z
+    maxAxis = absY;
+    uc = x;
+    vc = z;
+    *index = 3;
+  }
+  // POSITIVE Z
+  if (isZPositive && absZ >= absX && absZ >= absY) {
+    // u (0 to 1) goes from -x to +x
+    // v (0 to 1) goes from -y to +y
+    maxAxis = absZ;
+    uc = x;
+    vc = y;
+    *index = 4;
+  }
+  // NEGATIVE Z
+  if (!isZPositive && absZ >= absX && absZ >= absY) {
+    // u (0 to 1) goes from +x to -x
+    // v (0 to 1) goes from -y to +y
+    maxAxis = absZ;
+    uc = -x;
+    vc = y;
+    *index = 5;
+  }
+
+  // Convert range from -1 to 1 to 0 to 1
+  *u = 0.5f * (uc / maxAxis + 1.0f);
+  *v = 0.5f * (vc / maxAxis + 1.0f);
+}
+
+typedef struct Skybox {
+	SDL_Surface* imgs[6];
+} Skybox;
+
+Skybox mainSkybox;
+
+void LoadSkybox(Skybox* sb, const char** paths) {
+	for (int i = 0; i < 6; i++) {
+		SDL_Surface* surf = IMG_Load(paths[i]);
+		sb->imgs[i] = surf;
+	}
+}
+
+void DrawSky(Skybox* sb) {
+	for (int i = 0; i < GAME_HEIGHT; i++) {
+		for (int j = 0; j < GAME_WIDTH; j++) {
+			float x = mapf(j, 0, GAME_WIDTH, -1, 1);
+			float y = mapf(i, 0, GAME_HEIGHT, 1, -1);
+
+			vec3 dir = vec3_scale(vec3_normalize(vec3_add(
+				vec3_scale(mainCamera.forward, mainCamera.cam_dist), 
+				vec3_add(vec3_scale(mainCamera.right, x * GAME_WIDTH / 2), vec3_scale(mainCamera.up, y * GAME_HEIGHT / 2)))), 255);
+
+			int index;
+			float u;
+			float v;
+			convert_xyz_to_cube_uv(dir.x, dir.y, dir.z, &index, &u, &v);
+
+			int tx = mapf(u, 0, 1, 0, sb->imgs[0]->w);
+			int ty = mapf(v, 0, 1, 0, sb->imgs[0]->h);
+
+			rgb colour = SampleSurface(sb->imgs[index], tx, ty);
+
+			// SetPixel(j, i, (rgb){(uint8_t)(j ^ i), 0, 0});
+			SetPixel(j, i, colour);
+		}
+	}
+}
+
 void DrawFloor() {
 	vec3 pos = mainCamera.position;
 
@@ -372,7 +484,7 @@ void DrawFloor() {
 			SDL_Surface* surf = track.trackImage;
 
 			if (fx < 0 || fx > surf->w || fy < 0 || fy > surf->h) {
-				SetPixel(j, i, (rgb){0, 0, 0});
+				// SetPixel(j, i, (rgb){0, 0, 0});
 				continue;
 			}
 
@@ -772,6 +884,7 @@ void draw() {
 	// Actual drawing
 	{
 		// VisualizeRayDirections();
+		DrawSky(&mainSkybox);
 		DrawFloor();
 		DrawSprites();
 	}
@@ -792,7 +905,7 @@ int main() {
     SDL_GetVersion(&sdlVersion);
     printf("SDL Version: %d.%d.%d\n", sdlVersion.major, sdlVersion.minor, sdlVersion.patch);
     
-    window = SDL_CreateWindow("HackTheMidlands", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, GAME_WIDTH, GAME_HEIGHT, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+    window = SDL_CreateWindow("HackTheMidlands", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, GAME_WIDTH * 2, GAME_HEIGHT * 2, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_ACCELERATED);
 
 	SDL_RenderSetLogicalSize(renderer, GAME_WIDTH, GAME_HEIGHT);
@@ -809,6 +922,16 @@ int main() {
 	mainCamera.mode = FirstPerson;
 
 	Track_Load(&track, "mario_circuit_1.png", "mario_circuit_1_attributes.png");
+
+	const char* skyboxPaths[6] = {
+		"skybox/+x.png",
+		"skybox/-x.png",
+		"skybox/+y.png",
+		"skybox/-y.png",
+		"skybox/+z.png",
+		"skybox/-z.png",
+	};
+	LoadSkybox(&mainSkybox, skyboxPaths);
 
 	InitEnemyAI(&enemies[0], "paths/1.txt");
 	InitEnemyAI(&enemies[1], "paths/2.txt");
