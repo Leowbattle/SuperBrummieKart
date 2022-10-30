@@ -222,6 +222,8 @@ typedef struct Enemy {
 	vec2 dir;
 
 	float speed;
+
+	int lap;
 } Enemy;
 
 #define NUM_ENEMIES 2
@@ -332,6 +334,8 @@ int frame;
 float globalTime = 0;
 float lastGlobalTime = 0;
 float global_dt = 1.0f / 60;
+
+int trackNumber = 0;
 
 uint8_t* keyboardState = NULL;
 uint8_t* lastKeyboardState = NULL;
@@ -462,6 +466,8 @@ void InitEnemyAI(Enemy* enemy, const char* path) {
 	enemy->pos = enemy->path[0];
 
 	enemy->speed = 200;
+
+	enemy->lap = 1;
 }
 
 typedef struct Track {
@@ -928,6 +934,8 @@ void UpdateFreeFlyCamera() {
 	}
 }
 
+int positions[3];
+
 vec2 velocity = {0};
 void UpdateFirstPersonCamera() {
 	const float acceleration = 20;
@@ -991,7 +999,15 @@ void UpdateFirstPersonCamera() {
 
 					ps->lapNumber++;
 
-					if (ps->lapNumber == 2) {
+					if (ps->lapNumber == 4) {
+						int place = 1;
+						for (int i = 0; i < NUM_ENEMIES; i++) {
+							if (enemies[i].lap > 3) {
+								place++;
+							}
+						}
+						printf("Came %d\n", place);
+						positions[trackNumber - 1] = place;
 						Transition_init();
 					}
 				}
@@ -1065,6 +1081,11 @@ void Enemy_Update(Enemy* enemy) {
 	if (pathPoint.x >= minx && pathPoint.x <= maxx && pathPoint.y >= miny && pathPoint.y <= maxy) {
 		Enemy_BeginPathSegment(enemy, nextIndex);
 		printf("Passed point %d\n", enemy->pathIndex);
+
+		if (enemy->pathIndex == 0) {
+			printf("Enemy lap\n");
+			enemy->lap++;
+		}
 	}
 }
 
@@ -1102,7 +1123,6 @@ void Menu_draw() {
 	SDL_RenderPresent(renderer);
 }
 
-int trackNumber = 0;
 int transition_timer;
 
 const char* trackNames[] = {
@@ -1122,12 +1142,14 @@ void Transition_init() {
 }
 
 void NextTrack() {
+	if (trackNumber == 3) {
+		Over_init();
+		return;
+	}
+
 	Track_Load(&track, trackNames[trackNumber]);
 	trackNumber++;
 
-	if (trackNumber == 2) {
-		Over_init();
-	}
 }
 
 void Transition_update() {
@@ -1223,7 +1245,7 @@ void Over_draw() {
 		.alignX = TEXT_ALIGN_LEFT,
 		.alignY = TEXT_ALIGN_BELOW,
 	};
-	drawStringf(&dsi, "Thankyou for playing Super Brummie Kart.");
+	drawStringf(&dsi, "Thankyou for playing Super Brummie Kart. You came in places %d, %d, %d.", positions[0], positions[1], positions[2]);
 
 	SDL_RenderPresent(renderer);
 }
