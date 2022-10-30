@@ -364,13 +364,32 @@ vec2 ProjectPoint(vec3 p) {
 	};
 }
 
+int cmp_sprites(const void* a, const void* b) {
+	Camera* cam = &mainCamera;
+
+	Sprite* sa = a;
+	Sprite* sb = b;
+
+	float da = vec3_dot(cam->forward, vec3_sub(sa->pos, cam->position));
+	float db = vec3_dot(cam->forward, vec3_sub(sb->pos, cam->position));
+
+	if (da < db) {
+		return 1;
+	}
+	else {
+		return -1;
+	}
+}
+
 void DrawSprites() {
 	Camera* cam = &mainCamera;
+
+	qsort(sprites, numSprites, sizeof(Sprite), cmp_sprites);
 
 	// TODO
 	for (int i = 0; i < numSprites; i++) {
 		Sprite* spr = &sprites[i];
-		
+
 		vec3 left3 = vec3_sub(spr->pos, vec3_scale(cam->right, spr->img->w/2));
 		vec3 right3 = vec3_add(spr->pos, vec3_scale(cam->right, spr->img->w/2));
 
@@ -379,6 +398,10 @@ void DrawSprites() {
 		vec2 left = ProjectPoint(left3);
 		vec2 right = ProjectPoint(right3);
 		vec2 top = ProjectPoint(top3);
+
+		if (left.x > GAME_WIDTH || right.x < 0 || top.y > GAME_HEIGHT || left.y < 0) {
+			continue;
+		}
 
 		for (int y = top.y; y < left.y; y++) {
 			for (int x = left.x; x < right.x; x++) {
@@ -572,10 +595,11 @@ int main() {
 
 	Track_Load(&track, "mario_circuit_1.png", "mario_circuit_1_attributes.png");
 
-	int sprite = AddSprite("sus.png");
-	sprites[sprite].pos = (vec3){100, 100, 0};
-
-	// vec2 v = linear_solve2(5, 3, 6, 7, 2, 7);
+	int N = 20;
+	for (int i = 0; i < N; i++) {
+		int sprite = AddSprite("sus.png");
+		sprites[sprite].pos = (vec3){150 * cosf(2 * M_PI / N * i), 150 * sinf(2 * M_PI / N * i), 0};
+	}
 
     gameRunning = true;
 	frame = 0;
