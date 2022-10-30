@@ -212,6 +212,21 @@ int numSprites = 0;
 
 int AddSprite(const char* path);
 
+typedef struct Enemy {
+	int sprite;
+	vec2 pos;
+
+	vec2* path;
+	int pathLength;
+	int pathIndex;
+	vec2 dir;
+
+	float speed;
+} Enemy;
+
+#define NUM_ENEMIES 2
+Enemy enemies[NUM_ENEMIES];
+
 SDL_Window* window;
 SDL_Renderer* renderer;
 SDL_Texture* frameTexture;
@@ -385,14 +400,52 @@ rgba SampleSurface_rgba(SDL_Surface* surf, int x, int y) {
 	return (rgba){r,g,b,a};
 }
 
+typedef struct PlayerState {
+	vec2* path;
+	int pathLen;
+	int markerNumber;
+
+	int lapNumber;
+} PlayerState;
+
+PlayerState mainPlayerState;
+
+void InitPlayerState(PlayerState* ps, const char* path) {
+	FILE* f = fopen(path, "r");
+
+	int numPoints;
+	fscanf(f, "%d", &numPoints);
+	vec2* points = malloc(numPoints * sizeof(vec2));
+	for (int i = 0; i < numPoints; i++) {
+		fscanf(f, "%f,%f", &points[i].x, &points[i].y);
+
+		if (SHOW_PATH_MARKERS) {
+			vec2 point = points[i];
+			int s = AddSprite("player_path_marker.png");
+			sprites[s].pos = (vec3){point.x, point.y, 0};
+		}
+	}
+
+	ps->path = points;
+	ps->pathLen = numPoints;
+	ps->markerNumber = 0;
+
+	ps->lapNumber = 1;
+}
+
 typedef struct Track {
 	SDL_Surface* trackImage;
 	SDL_Surface* attributeImage;
 	int size_log2;
 } Track;
 
-void Track_Load(Track* tr, const char* path, const char* attr_path) {
-	SDL_Surface* surf = IMG_Load(path);
+void Track_Load(Track* tr, const char* path) {
+	char buf[1024];
+
+	memset(buf, 0, sizeof(buf));
+	sprintf(buf, "%s/track.png", path);
+
+	SDL_Surface* surf = IMG_Load(buf);
 	if (surf == NULL) {
 		fprintf(stderr, "Unable to load track: %s\n", IMG_GetError());
 		exit(EXIT_FAILURE);
@@ -408,7 +461,10 @@ void Track_Load(Track* tr, const char* path, const char* attr_path) {
 	tr->trackImage = surf2;
 	tr->size_log2 = size_log2;
 
-	SDL_Surface* attr_surf = IMG_Load(attr_path);
+	memset(buf, 0, sizeof(buf));
+	sprintf(buf, "%s/attributes.png", path);
+
+	SDL_Surface* attr_surf = IMG_Load(buf);
 	SDL_Surface* attr_surf2 = SDL_ConvertSurfaceFormat(attr_surf, SDL_PIXELFORMAT_RGB24, 0);
 	tr->attributeImage = attr_surf2;
 
@@ -426,6 +482,19 @@ void Track_Load(Track* tr, const char* path, const char* attr_path) {
 			}
 		}
 	}
+
+	memset(buf, 0, sizeof(buf));
+	sprintf(buf, "%s/paths/player.txt", path);
+
+	InitPlayerState(&mainPlayerState, buf);
+
+	memset(buf, 0, sizeof(buf));
+	sprintf(buf, "%s/paths/1.txt", path);
+	InitEnemyAI(&enemies[0], buf);
+
+	memset(buf, 0, sizeof(buf));
+	sprintf(buf, "%s/paths/2.txt", path);
+	InitEnemyAI(&enemies[1], buf);
 }
 
 void Track_Unload(Track* tr) {
@@ -801,39 +870,6 @@ void UpdateFreeFlyCamera() {
 	}
 }
 
-typedef struct PlayerState {
-	vec2* path;
-	int pathLen;
-	int markerNumber;
-
-	int lapNumber;
-} PlayerState;
-
-PlayerState mainPlayerState;
-
-void InitPlayerState(PlayerState* ps, const char* path) {
-	FILE* f = fopen(path, "r");
-
-	int numPoints;
-	fscanf(f, "%d", &numPoints);
-	vec2* points = malloc(numPoints * sizeof(vec2));
-	for (int i = 0; i < numPoints; i++) {
-		fscanf(f, "%f,%f", &points[i].x, &points[i].y);
-
-		if (SHOW_PATH_MARKERS) {
-			vec2 point = points[i];
-			int s = AddSprite("player_path_marker.png");
-			sprites[s].pos = (vec3){point.x, point.y, 0};
-		}
-	}
-
-	ps->path = points;
-	ps->pathLen = numPoints;
-	ps->markerNumber = 0;
-
-	ps->lapNumber = 1;
-}
-
 vec2 velocity = {0};
 void UpdateFirstPersonCamera() {
 	const float acceleration = 20;
@@ -928,21 +964,6 @@ void updateKeyboard() {
 	memcpy(lastKeyboardState, keyboardState, numKeys);
 	memcpy(keyboardState, kb, numKeys);
 }
-
-typedef struct Enemy {
-	int sprite;
-	vec2 pos;
-
-	vec2* path;
-	int pathLength;
-	int pathIndex;
-	vec2 dir;
-
-	float speed;
-} Enemy;
-
-#define NUM_ENEMIES 2
-Enemy enemies[NUM_ENEMIES];
 
 void InitEnemyAI(Enemy* enemy, const char* path) {
 	FILE* f = fopen(path, "r");
@@ -1086,13 +1107,13 @@ int main() {
 
 	SDL_SetRelativeMouseMode(true);
 
-	mainCamera.position = (vec3){951, 606, 20};
+	mainCamera.position = (vec3){953, 760, 20};
 	// mainCamera.position = (vec3){200, 200, 50};
 	Camera_SetFovX(&mainCamera, deg2rad(90));
 	Camera_SetYawPitch(&mainCamera, deg2rad(-90), deg2rad(-20));
 	mainCamera.mode = FirstPerson;
 
-	Track_Load(&track, "mario_circuit_1.png", "mario_circuit_1_attributes.png");
+	Track_Load(&track, "tracks/mario_circuit_1");
 
 	const char* skyboxPaths[6] = {
 		"skybox/+x.png",
@@ -1103,11 +1124,6 @@ int main() {
 		"skybox/-z.png",
 	};
 	LoadSkybox(&mainSkybox, skyboxPaths);
-
-	InitPlayerState(&mainPlayerState, "paths/player.txt");
-
-	InitEnemyAI(&enemies[0], "paths/1.txt");
-	InitEnemyAI(&enemies[1], "paths/2.txt");
 
 	font = TTF_OpenFont("Blinker-Regular.ttf", 72);
 
