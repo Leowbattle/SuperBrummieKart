@@ -20,6 +20,27 @@
 #define SHOW_PATH_MARKERS false
 #define ENABLE_TREES true
 
+enum TextAlignment {
+	TEXT_ALIGN_LEFT = 0,
+	TEXT_ALIGN_BELOW = 0,
+	TEXT_ALIGN_CENTRE = 1,
+	TEXT_ALIGN_RIGHT = 2,
+	TEXT_ALIGN_ABOVE = 2,
+};
+
+typedef struct DrawStringInfo {
+	TTF_Font* font;
+	SDL_Color colour;
+	int x;
+	int y;
+
+	enum TextAlignment alignX;
+	enum TextAlignment alignY;
+} DrawStringInfo;
+
+void drawString(DrawStringInfo* dsi, const char* msg);
+void drawStringf(DrawStringInfo* dsi, const char* fmt, ...);
+
 // https://stackoverflow.com/questions/600293/how-to-check-if-a-number-is-a-power-of-2
 bool IsPowerOfTwo(int x) {
     return (x != 0) && ((x & (x - 1)) == 0);
@@ -196,6 +217,88 @@ SDL_Renderer* renderer;
 SDL_Texture* frameTexture;
 void* textureData;
 int rowPitch;
+
+TTF_Font* font;
+
+void drawString(DrawStringInfo* dsi, const char* msg) {
+	SDL_Surface* surf = TTF_RenderUTF8_Blended(dsi->font, msg, dsi->colour);
+	SDL_Texture* tex = SDL_CreateTextureFromSurface(renderer, surf);
+
+	int x = dsi->x;
+	int y = dsi->y;
+
+	switch (dsi->alignX) {
+	case TEXT_ALIGN_LEFT:
+		break;
+
+	case TEXT_ALIGN_RIGHT:
+		x -= surf->w;
+		break;
+
+	case TEXT_ALIGN_CENTRE:
+		x -= surf->w / 2;
+		break;
+
+	default:
+		printf("Invalid text align\n");
+		exit(-1);
+	}
+
+	switch (dsi->alignY) {
+	case TEXT_ALIGN_BELOW:
+		break;
+
+	case TEXT_ALIGN_ABOVE:
+		y -= surf->h;
+		break;
+
+	case TEXT_ALIGN_CENTRE:
+		y -= surf->h / 2;
+		break;
+
+	default:
+		printf("Invalid text align\n");
+		exit(-1);
+	}
+
+	SDL_Rect dest = {
+		x,
+		y,
+		surf->w,
+		surf->h
+	};
+
+	SDL_RenderCopy(renderer, tex, NULL, &dest);
+
+	SDL_FreeSurface(surf);
+	SDL_DestroyTexture(tex);
+}
+
+void drawStringf(DrawStringInfo* dsi, const char* fmt, ...) {
+	static char* buf;
+	static int bufSize;
+
+	while (true) {
+		va_list args;
+		va_start(args, fmt);
+
+		if (buf == NULL) {
+			bufSize = 4;
+			buf = malloc(bufSize);
+		}
+		int ret = vsnprintf(buf, bufSize, fmt, args);
+		if (ret > bufSize) {
+			bufSize = ret + 1;
+			buf = realloc(buf, bufSize);
+		}
+		else {
+			drawString(dsi, buf);
+			return;
+		}
+
+		va_end(args);
+	}
+}
 
 void SetPixel(int x, int y, rgb colour) {
 	if (x > 0 && x < GAME_WIDTH && y > 0 && y < GAME_HEIGHT) {
@@ -698,12 +801,46 @@ void UpdateFreeFlyCamera() {
 	}
 }
 
+typedef struct PlayerState {
+	vec2* path;
+	int pathLen;
+	int markerNumber;
+
+	int lapNumber;
+} PlayerState;
+
+PlayerState mainPlayerState;
+
+void InitPlayerState(PlayerState* ps, const char* path) {
+	FILE* f = fopen(path, "r");
+
+	int numPoints;
+	fscanf(f, "%d", &numPoints);
+	vec2* points = malloc(numPoints * sizeof(vec2));
+	for (int i = 0; i < numPoints; i++) {
+		fscanf(f, "%f,%f", &points[i].x, &points[i].y);
+
+		if (SHOW_PATH_MARKERS) {
+			vec2 point = points[i];
+			int s = AddSprite("player_path_marker.png");
+			sprites[s].pos = (vec3){point.x, point.y, 0};
+		}
+	}
+
+	ps->path = points;
+	ps->pathLen = numPoints;
+	ps->markerNumber = 0;
+
+	ps->lapNumber = 1;
+}
+
 vec2 velocity = {0};
 void UpdateFirstPersonCamera() {
 	const float acceleration = 20;
 	const float turnSpeed = deg2rad(90);
 	
 	Camera* cam = &mainCamera;
+	PlayerState* ps = &mainPlayerState;
 
 	float drag;
 	rgb c = SampleSurface(track.attributeImage, cam->position.x, cam->position.y);
@@ -740,6 +877,29 @@ void UpdateFirstPersonCamera() {
 
 	cam->position.x += velocity.x;
 	cam->position.y += velocity.y;
+
+	// Check player markers
+
+	for (int i = 0; i < ps->pathLen; i++) {
+		vec2 pathPoint = ps->path[i];
+		float dx = pathPoint.x - cam->position.x;
+		float dy = pathPoint.y - cam->position.y;
+		float d = hypotf(dx, dy);
+
+		if (d < 50) {
+			if (i == ps->markerNumber) {
+				printf("Player passed marker %d\n", ps->markerNumber);
+				ps->markerNumber++;
+
+				if (ps->markerNumber == ps->pathLen) {
+					ps->markerNumber = 0;
+					printf("Lap\n");
+
+					ps->lapNumber++;
+				}
+			}
+		}
+	}
 }
 
 void UpdateCamera() {
@@ -893,6 +1053,17 @@ void draw() {
 	// Present frame
 	SDL_UnlockTexture(frameTexture);
 	SDL_RenderCopy(renderer, frameTexture, NULL, NULL);
+
+	DrawStringInfo dsi = {
+		.font = font,
+		.colour = {0xff, 0xff, 0xff, 0xff},
+		.x = 0,
+		.y = GAME_HEIGHT,
+		.alignX = TEXT_ALIGN_LEFT,
+		.alignY = TEXT_ALIGN_ABOVE,
+	};
+	drawStringf(&dsi, "Lap %d", mainPlayerState.lapNumber);
+
 	SDL_RenderPresent(renderer);
 }
 
@@ -933,8 +1104,12 @@ int main() {
 	};
 	LoadSkybox(&mainSkybox, skyboxPaths);
 
+	InitPlayerState(&mainPlayerState, "paths/player.txt");
+
 	InitEnemyAI(&enemies[0], "paths/1.txt");
 	InitEnemyAI(&enemies[1], "paths/2.txt");
+
+	font = TTF_OpenFont("Blinker-Regular.ttf", 72);
 
     gameRunning = true;
 	frame = 0;
