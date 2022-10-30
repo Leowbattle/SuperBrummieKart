@@ -1,4 +1,4 @@
-// Note to self: In this program +Z axis is up
+// Note: In this program +Z axis is up
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +16,9 @@
 #define GAME_HEIGHT 720
 #define ASPECT_RATIO ((float)GAME_WIDTH / GAME_HEIGHT)
 #define INV_ASPECT_RATIO ((float)GAME_HEIGHT / GAME_WIDTH)
+
+#define SHOW_PATH_MARKERS false
+#define ENABLE_TREES true
 
 // https://stackoverflow.com/questions/600293/how-to-check-if-a-number-is-a-power-of-2
 bool IsPowerOfTwo(int x) {
@@ -66,6 +69,14 @@ typedef struct vec2 {
 	float x;
 	float y;
 } vec2;
+
+vec2 vec2_add(vec2 a, vec2 b) {
+	return (vec2){a.x + b.x, a.y + b.y};
+}
+
+vec2 vec2_sub(vec2 a, vec2 b) {
+	return (vec2){a.x - b.x, a.y - b.y};
+}
 
 vec2 vec2_scale(vec2 a, float s) {
 	return (vec2){a.x * s, a.y * s};
@@ -301,12 +312,14 @@ void Track_Load(Track* tr, const char* path, const char* attr_path) {
 	SDL_FreeSurface(surf);
 	SDL_FreeSurface(attr_surf);
 
-	for (int i = 0; i < tr->attributeImage->h; i++) {
-		for (int j = 0; j < tr->attributeImage->w; j++) {
-			rgb c = SampleSurface(tr->attributeImage, j, i);
-			if (memcmp(&c, &(rgb){0, 0, 255}, sizeof(rgb)) == 0) {
-				int s = AddSprite("tree.png");
-				sprites[s].pos = (vec3){j, i, 0};
+	if (ENABLE_TREES) {
+		for (int i = 0; i < tr->attributeImage->h; i++) {
+			for (int j = 0; j < tr->attributeImage->w; j++) {
+				rgb c = SampleSurface(tr->attributeImage, j, i);
+				if (memcmp(&c, &(rgb){0, 0, 255}, sizeof(rgb)) == 0) {
+					int s = AddSprite("tree.png");
+					sprites[s].pos = (vec3){j, i, 0};
+				}
 			}
 		}
 	}
@@ -356,11 +369,17 @@ void DrawFloor() {
 			float fx = pos.x + t * dir.x;
 			float fy = pos.y + t * dir.y;
 
+			SDL_Surface* surf = track.trackImage;
+
+			if (fx < 0 || fx > surf->w || fy < 0 || fy > surf->h) {
+				SetPixel(j, i, (rgb){0, 0, 0});
+				continue;
+			}
+
 			int mask = (1 << track.size_log2) - 1;
 			int tx = (int)fx & mask;
 			int ty = (int)fy & mask;
 
-			SDL_Surface* surf = track.trackImage;
 			uint8_t* pixelData = surf->pixels;
 			uint8_t r = pixelData[ty * surf->pitch + tx * 3 + 0];
 			uint8_t g = pixelData[ty * surf->pitch + tx * 3 + 1];
@@ -387,7 +406,8 @@ int AddSprite(const char* path) {
 	sprites[numSprites].numAngles = 1;
 	sprites[numSprites].w = surf->w;
 	sprites[numSprites].h = surf->h;
-	return numSprites++;
+	numSprites++;
+	return numSprites - 1;
 }
 
 int AddSpriteRotations(const char* path) {
@@ -432,8 +452,11 @@ vec2 ProjectPoint(vec3 p) {
 int cmp_sprites(const void* a, const void* b) {
 	Camera* cam = &mainCamera;
 
-	const Sprite* sa = a;
-	const Sprite* sb = b;
+	int ia = *(int*)a;
+	int ib = *(int*)b;
+
+	const Sprite* sa = &sprites[ia];
+	const Sprite* sb = &sprites[ib];
 
 	float da = vec3_dot(cam->forward, vec3_sub(sa->pos, cam->position));
 	float db = vec3_dot(cam->forward, vec3_sub(sb->pos, cam->position));
@@ -451,10 +474,14 @@ void DrawSprites() {
 
 	Camera* cam = &mainCamera;
 
-	qsort(sprites, numSprites, sizeof(Sprite), cmp_sprites);
+	int drawOrder[MAX_SPRITES];
+	for (int i = 0; i < numSprites; i++) {
+		drawOrder[i] = i;
+	}
+	qsort(drawOrder, numSprites, sizeof(int), cmp_sprites);
 
 	for (int i = 0; i < numSprites; i++) {
-		Sprite* spr = &sprites[i];
+		Sprite* spr = &sprites[drawOrder[i]];
 
 		int rotationIndex = 0;
 		bool flipX = false;
@@ -477,7 +504,6 @@ void DrawSprites() {
 				rotationIndex = rotationIndex - spr->numAngles;
 				flipX = true;
 			}
-			printf("%d\n", rotationIndex);
 		}
 
 		vec3 left3 = vec3_sub(spr->pos, vec3_scale(cam->right, spr->w/2.0f));
@@ -598,6 +624,8 @@ void UpdateFirstPersonCamera() {
 	velocity.x -= drag * velocity.x * global_dt;
 	velocity.y -= drag * velocity.y * global_dt;
 
+	// printf("Player velocity: %f\n", hypotf(velocity.x, velocity.y));
+
 	cam->position.x += velocity.x;
 	cam->position.y += velocity.y;
 }
@@ -629,6 +657,90 @@ void updateKeyboard() {
 	memcpy(keyboardState, kb, numKeys);
 }
 
+typedef struct Enemy {
+	int sprite;
+	vec2 pos;
+
+	vec2* path;
+	int pathLength;
+	int pathIndex;
+	vec2 dir;
+
+	float speed;
+} Enemy;
+
+#define NUM_ENEMIES 2
+Enemy enemies[NUM_ENEMIES];
+
+void InitEnemyAI(Enemy* enemy, const char* path) {
+	FILE* f = fopen(path, "r");
+	
+	char spritePath[1024];
+	fscanf(f, "%s", spritePath);
+	enemy->sprite = AddSpriteRotations(spritePath);
+	
+	int numPoints;
+	fscanf(f, "%d", &numPoints);
+	vec2* points = malloc(numPoints * sizeof(vec2));
+	for (int i = 0; i < numPoints; i++) {
+		fscanf(f, "%f,%f", &points[i].x, &points[i].y);
+
+		if (SHOW_PATH_MARKERS) {
+			vec2 point = points[i];
+			int s = AddSprite("path_marker.png");
+			sprites[s].pos = (vec3){point.x, point.y, 0};
+		}
+	}
+	enemy->path = points;
+	enemy->pathLength = numPoints;
+	enemy->pathIndex = -1;
+
+	enemy->pos = enemy->path[0];
+
+	enemy->speed = 200;
+}
+
+void Enemy_BeginPathSegment(Enemy* enemy, int n) {
+	enemy->pathIndex = n;
+	
+	vec2 a = enemy->pos;
+	vec2 b = enemy->path[n + 1 == enemy->pathLength ? 0 : n + 1];
+	vec2 d = vec2_normalize(vec2_sub(b, a));
+	enemy->dir = d;
+}
+
+void Enemy_Update(Enemy* enemy) {
+	sprites[enemy->sprite].pos = (vec3){enemy->pos.x, enemy->pos.y, 0};
+
+	if (enemy->pathIndex == -1) {
+		Enemy_BeginPathSegment(enemy, 0);
+	}
+
+	vec2 old_pos = enemy->pos;
+	enemy->pos.x += enemy->dir.x * enemy->speed * global_dt;
+	enemy->pos.y += enemy->dir.y * enemy->speed * global_dt;
+
+	float minx = fminf(old_pos.x, enemy->pos.x);
+	float maxx = fmaxf(old_pos.x, enemy->pos.x);
+
+	float miny = fminf(old_pos.y, enemy->pos.y);
+	float maxy = fmaxf(old_pos.y, enemy->pos.y);
+
+	minx -= 10;
+	maxx += 10;
+
+	miny -= 10;
+	maxx += 10;
+
+	int nextIndex = enemy->pathIndex + 1 == enemy->pathLength ? 0 : enemy->pathIndex + 1;
+	vec2 pathPoint = enemy->path[nextIndex];
+
+	if (pathPoint.x >= minx && pathPoint.x <= maxx && pathPoint.y >= miny && pathPoint.y <= maxy) {
+		Enemy_BeginPathSegment(enemy, nextIndex);
+		printf("Passed point %d\n", enemy->pathIndex);
+	}
+}
+
 void update() {
 	lastGlobalTime = globalTime;
 	globalTime += global_dt;
@@ -636,6 +748,12 @@ void update() {
 	updateKeyboard();
 
 	UpdateCamera();
+
+	for (int i = 0; i < NUM_ENEMIES; i++) {
+		Enemy_Update(&enemies[i]);
+	}
+
+	// printf("%f %f %f\n", mainCamera.position.x, mainCamera.position.y, mainCamera.position.z);
 }
 
 void draw() {
@@ -666,7 +784,7 @@ void draw() {
 }
 
 int main() {
-    SDL_Init(SDL_INIT_EVERYTHING);
+	SDL_Init(SDL_INIT_EVERYTHING);
 	IMG_Init(IMG_INIT_PNG);
 	TTF_Init();
 
@@ -684,17 +802,16 @@ int main() {
 
 	SDL_SetRelativeMouseMode(true);
 
-	mainCamera.position = (vec3){920, 585, 10};
+	mainCamera.position = (vec3){951, 606, 20};
 	// mainCamera.position = (vec3){200, 200, 50};
 	Camera_SetFovX(&mainCamera, deg2rad(90));
 	Camera_SetYawPitch(&mainCamera, deg2rad(-90), deg2rad(-20));
-	mainCamera.mode = FreeFlyCamera;
+	mainCamera.mode = FirstPerson;
 
 	Track_Load(&track, "mario_circuit_1.png", "mario_circuit_1_attributes.png");
 
-	int bowser = AddSpriteRotations("bowser.png");
-	sprites[bowser].pos = (vec3){920, 485, 0};
-	sprites[bowser].angle = deg2rad(-90);
+	InitEnemyAI(&enemies[0], "paths/1.txt");
+	InitEnemyAI(&enemies[1], "paths/2.txt");
 
     gameRunning = true;
 	frame = 0;
