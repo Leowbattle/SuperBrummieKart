@@ -433,16 +433,46 @@ void InitPlayerState(PlayerState* ps, const char* path) {
 	ps->lapNumber = 1;
 }
 
+void InitEnemyAI(Enemy* enemy, const char* path) {
+	FILE* f = fopen(path, "r");
+	
+	char spritePath[1024];
+	fscanf(f, "%s", spritePath);
+	enemy->sprite = AddSpriteRotations(spritePath);
+	
+	int numPoints;
+	fscanf(f, "%d", &numPoints);
+	vec2* points = malloc(numPoints * sizeof(vec2));
+	for (int i = 0; i < numPoints; i++) {
+		fscanf(f, "%f,%f", &points[i].x, &points[i].y);
+
+		if (SHOW_PATH_MARKERS) {
+			vec2 point = points[i];
+			int s = AddSprite("path_marker.png");
+			sprites[s].pos = (vec3){point.x, point.y, 0};
+		}
+	}
+	enemy->path = points;
+	enemy->pathLength = numPoints;
+	enemy->pathIndex = -1;
+
+	enemy->pos = enemy->path[0];
+
+	enemy->speed = 200;
+}
+
 typedef struct Track {
 	SDL_Surface* trackImage;
 	SDL_Surface* attributeImage;
 	int size_log2;
 } Track;
 
+Camera mainCamera;
+
 void Track_Load(Track* tr, const char* path) {
 	char buf[1024];
 
-	memset(buf, 0, sizeof(buf));
+	//memset(buf, 0, sizeof(buf));
 	sprintf(buf, "%s/track.png", path);
 
 	SDL_Surface* surf = IMG_Load(buf);
@@ -461,7 +491,7 @@ void Track_Load(Track* tr, const char* path) {
 	tr->trackImage = surf2;
 	tr->size_log2 = size_log2;
 
-	memset(buf, 0, sizeof(buf));
+	//memset(buf, 0, sizeof(buf));
 	sprintf(buf, "%s/attributes.png", path);
 
 	SDL_Surface* attr_surf = IMG_Load(buf);
@@ -483,25 +513,43 @@ void Track_Load(Track* tr, const char* path) {
 		}
 	}
 
-	memset(buf, 0, sizeof(buf));
+	//memset(buf, 0, sizeof(buf));
 	sprintf(buf, "%s/paths/player.txt", path);
 
 	InitPlayerState(&mainPlayerState, buf);
 
-	memset(buf, 0, sizeof(buf));
+	//memset(buf, 0, sizeof(buf));
 	sprintf(buf, "%s/paths/1.txt", path);
 	InitEnemyAI(&enemies[0], buf);
 
-	memset(buf, 0, sizeof(buf));
+	//memset(buf, 0, sizeof(buf));
 	sprintf(buf, "%s/paths/2.txt", path);
 	InitEnemyAI(&enemies[1], buf);
+
+	sprintf(buf, "%s/info.txt", path);
+	FILE* f = fopen(buf, "r");
+
+	char trackName[1024];
+	fgets(trackName, sizeof(trackName), f);
+
+	float startX, startY;
+	fscanf(f, "%f,%f", &startX, &startY);
+
+	mainCamera.position = (vec3){
+		startX,
+		startY,
+		20
+	};
+
+	Camera_SetFovX(&mainCamera, deg2rad(90));
+	Camera_SetYawPitch(&mainCamera, deg2rad(-90), deg2rad(-20));
+	mainCamera.mode = FirstPerson;
 }
 
 void Track_Unload(Track* tr) {
 	SDL_FreeSurface(tr->trackImage);
 }
 
-Camera mainCamera;
 Track track;
 
 void VisualizeRayDirections() {
@@ -668,6 +716,10 @@ void DrawFloor() {
 			uint8_t r = pixelData[ty * surf->pitch + tx * 3 + 0];
 			uint8_t g = pixelData[ty * surf->pitch + tx * 3 + 1];
 			uint8_t b = pixelData[ty * surf->pitch + tx * 3 + 2];
+
+			if (r == 255 && g == 0 && b == 255) {
+				continue;
+			}
 
 			SetPixel(j, i, (rgb){r, g, b});
 		}
@@ -922,7 +974,7 @@ void UpdateFirstPersonCamera() {
 		float dy = pathPoint.y - cam->position.y;
 		float d = hypotf(dx, dy);
 
-		if (d < 50) {
+		if (d < 100) {
 			if (i == ps->markerNumber) {
 				printf("Player passed marker %d\n", ps->markerNumber);
 				ps->markerNumber++;
@@ -963,34 +1015,6 @@ void updateKeyboard() {
 
 	memcpy(lastKeyboardState, keyboardState, numKeys);
 	memcpy(keyboardState, kb, numKeys);
-}
-
-void InitEnemyAI(Enemy* enemy, const char* path) {
-	FILE* f = fopen(path, "r");
-	
-	char spritePath[1024];
-	fscanf(f, "%s", spritePath);
-	enemy->sprite = AddSpriteRotations(spritePath);
-	
-	int numPoints;
-	fscanf(f, "%d", &numPoints);
-	vec2* points = malloc(numPoints * sizeof(vec2));
-	for (int i = 0; i < numPoints; i++) {
-		fscanf(f, "%f,%f", &points[i].x, &points[i].y);
-
-		if (SHOW_PATH_MARKERS) {
-			vec2 point = points[i];
-			int s = AddSprite("path_marker.png");
-			sprites[s].pos = (vec3){point.x, point.y, 0};
-		}
-	}
-	enemy->path = points;
-	enemy->pathLength = numPoints;
-	enemy->pathIndex = -1;
-
-	enemy->pos = enemy->path[0];
-
-	enemy->speed = 200;
 }
 
 void Enemy_BeginPathSegment(Enemy* enemy, int n) {
@@ -1097,7 +1121,7 @@ int main() {
     SDL_GetVersion(&sdlVersion);
     printf("SDL Version: %d.%d.%d\n", sdlVersion.major, sdlVersion.minor, sdlVersion.patch);
     
-    window = SDL_CreateWindow("HackTheMidlands", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, GAME_WIDTH * 2, GAME_HEIGHT * 2, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+    window = SDL_CreateWindow("Super Brummie Kart", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, GAME_WIDTH * 2, GAME_HEIGHT * 2, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_ACCELERATED);
 
 	SDL_RenderSetLogicalSize(renderer, GAME_WIDTH, GAME_HEIGHT);
@@ -1107,13 +1131,7 @@ int main() {
 
 	SDL_SetRelativeMouseMode(true);
 
-	mainCamera.position = (vec3){953, 760, 20};
-	// mainCamera.position = (vec3){200, 200, 50};
-	Camera_SetFovX(&mainCamera, deg2rad(90));
-	Camera_SetYawPitch(&mainCamera, deg2rad(-90), deg2rad(-20));
-	mainCamera.mode = FirstPerson;
-
-	Track_Load(&track, "tracks/mario_circuit_1");
+	Track_Load(&track, "tracks/ghost");
 
 	const char* skyboxPaths[6] = {
 		"skybox/+x.png",
