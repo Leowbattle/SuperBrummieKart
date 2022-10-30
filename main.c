@@ -227,6 +227,8 @@ typedef struct Enemy {
 #define NUM_ENEMIES 2
 Enemy enemies[NUM_ENEMIES];
 
+void NextTrack();
+
 SDL_Window* window;
 SDL_Renderer* renderer;
 SDL_Texture* frameTexture;
@@ -234,6 +236,7 @@ void* textureData;
 int rowPitch;
 
 TTF_Font* font;
+TTF_Font* font_small;
 
 void drawString(DrawStringInfo* dsi, const char* msg) {
 	SDL_Surface* surf = TTF_RenderUTF8_Blended(dsi->font, msg, dsi->colour);
@@ -465,6 +468,7 @@ typedef struct Track {
 	SDL_Surface* trackImage;
 	SDL_Surface* attributeImage;
 	int size_log2;
+	char trackName[1024];
 } Track;
 
 Camera mainCamera;
@@ -531,6 +535,8 @@ void Track_Load(Track* tr, const char* path) {
 
 	char trackName[1024];
 	fgets(trackName, sizeof(trackName), f);
+	trackName[strlen(trackName) - 1] = 0;
+	strcpy(tr->trackName, trackName);
 
 	float startX, startY;
 	fscanf(f, "%f,%f", &startX, &startY);
@@ -984,6 +990,10 @@ void UpdateFirstPersonCamera() {
 					printf("Lap\n");
 
 					ps->lapNumber++;
+
+					if (ps->lapNumber == 2) {
+						Transition_init();
+					}
 				}
 			}
 		}
@@ -1058,22 +1068,107 @@ void Enemy_Update(Enemy* enemy) {
 	}
 }
 
-void update() {
-	lastGlobalTime = globalTime;
-	globalTime += global_dt;
+typedef enum GameState {
+	State_Menu,
+	State_Transition,
+	State_Game,
+	State_Over,
+} GameState;
 
-	updateKeyboard();
+GameState gameState;
 
+SDL_Texture* logo;
+SDL_Texture* logo_notext;
+
+void Menu_init() {
+	gameState = State_Menu;
+
+	logo = IMG_LoadTexture(renderer, "logo.png");
+	logo_notext = IMG_LoadTexture(renderer, "brummie.png");
+}
+
+void Menu_update() {
+	if (keyboardState[SDL_SCANCODE_RETURN]) {
+		Transition_init();
+	}
+}
+
+void Menu_draw() {
+	SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+	SDL_RenderClear(renderer);
+
+	SDL_RenderCopy(renderer, logo, NULL, NULL);
+
+	SDL_RenderPresent(renderer);
+}
+
+int trackNumber = 0;
+int transition_timer;
+
+const char* trackNames[] = {
+	"tracks/mario_circuit",
+	"tracks/ghost",
+	"tracks/rainbow"
+};
+
+void Transition_init() {
+	gameState = State_Transition;
+
+	numSprites = 0;
+
+	NextTrack();
+
+	transition_timer = 60;
+}
+
+void NextTrack() {
+	Track_Load(&track, trackNames[trackNumber]);
+	trackNumber++;
+
+	if (trackNumber == 2) {
+		Over_init();
+	}
+}
+
+void Transition_update() {
+	transition_timer--;
+	if (transition_timer == 0) {
+		Game_init();
+	}
+}
+
+void Transition_draw() {
+	SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+	SDL_RenderClear(renderer);
+	
+	SDL_RenderCopy(renderer, logo_notext, NULL, NULL);
+	
+	DrawStringInfo dsi = {
+		.font = font,
+		.colour = {0xff, 0xff, 0xff, 0xff},
+		.x = GAME_WIDTH / 2,
+		.y = GAME_HEIGHT / 2,
+		.alignX = TEXT_ALIGN_CENTRE,
+		.alignY = TEXT_ALIGN_CENTRE,
+	};
+	drawString(&dsi, track.trackName);
+
+	SDL_RenderPresent(renderer);
+}
+
+void Game_init() {
+	gameState = State_Game;
+}
+
+void Game_update() {
 	UpdateCamera();
 
 	for (int i = 0; i < NUM_ENEMIES; i++) {
 		Enemy_Update(&enemies[i]);
 	}
-
-	// printf("%f %f %f\n", mainCamera.position.x, mainCamera.position.y, mainCamera.position.z);
 }
 
-void draw() {
+void Game_draw() {
 	////////////////////
 	// Prepare draw
 
@@ -1085,15 +1180,9 @@ void draw() {
 	SDL_LockTexture(frameTexture, NULL, &textureData, &rowPitch);
 	memset(textureData, 127, rowPitch * GAME_HEIGHT);
 
-	////////////////////
-	// Actual drawing
-	{
-		// VisualizeRayDirections();
-		DrawSky(&mainSkybox);
-		DrawFloor();
-		DrawSprites();
-	}
-	////////////////////
+	DrawSky(&mainSkybox);
+	DrawFloor();
+	DrawSprites();
 
 	// Present frame
 	SDL_UnlockTexture(frameTexture);
@@ -1110,6 +1199,80 @@ void draw() {
 	drawStringf(&dsi, "Lap %d", mainPlayerState.lapNumber);
 
 	SDL_RenderPresent(renderer);
+}
+
+void Over_init() {
+	gameState = State_Over;
+}
+
+void Over_update() {
+
+}
+
+void Over_draw() {
+	SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
+	SDL_RenderClear(renderer);
+	
+	SDL_RenderCopy(renderer, logo_notext, NULL, NULL);
+	
+	DrawStringInfo dsi = {
+		.font = font_small,
+		.colour = {0xff, 0xff, 0xff, 0xff},
+		.x = 0,
+		.y = 0,
+		.alignX = TEXT_ALIGN_LEFT,
+		.alignY = TEXT_ALIGN_BELOW,
+	};
+	drawStringf(&dsi, "Thankyou for playing Super Brummie Kart.");
+
+	SDL_RenderPresent(renderer);
+}
+
+void update() {
+	lastGlobalTime = globalTime;
+	globalTime += global_dt;
+
+	updateKeyboard();
+
+	switch (gameState) {
+	case State_Menu:
+		Menu_update();
+		break;
+	case State_Transition:
+		Transition_update();
+		break;
+	case State_Game:
+		Game_update();
+		break;
+	case State_Over:
+		Over_update();
+		break;
+	default:
+		fprintf(stderr, "Invalid game state %d\n", gameState);
+		exit(EXIT_FAILURE);
+	}
+
+	// printf("%f %f %f\n", mainCamera.position.x, mainCamera.position.y, mainCamera.position.z);
+}
+
+void draw() {
+	switch (gameState) {
+	case State_Menu:
+		Menu_draw();
+		break;
+	case State_Transition:
+		Transition_draw();
+		break;
+	case State_Game:
+		Game_draw();
+		break;
+	case State_Over:
+		Over_draw();
+		break;
+	default:
+		fprintf(stderr, "Invalid game state %d\n", gameState);
+		exit(EXIT_FAILURE);
+	}
 }
 
 int main() {
@@ -1131,8 +1294,6 @@ int main() {
 
 	SDL_SetRelativeMouseMode(true);
 
-	Track_Load(&track, "tracks/ghost");
-
 	const char* skyboxPaths[6] = {
 		"skybox/+x.png",
 		"skybox/-x.png",
@@ -1144,6 +1305,10 @@ int main() {
 	LoadSkybox(&mainSkybox, skyboxPaths);
 
 	font = TTF_OpenFont("Blinker-Regular.ttf", 72);
+	font_small = TTF_OpenFont("Blinker-Regular.ttf", 20);
+	
+	Menu_init();
+	// Game_init();
 
     gameRunning = true;
 	frame = 0;
