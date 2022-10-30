@@ -51,6 +51,13 @@ typedef struct rgb {
 	uint8_t b;
 } rgb;
 
+typedef struct rgba {
+	uint8_t r;
+	uint8_t g;
+	uint8_t b;
+	uint8_t a;
+} rgba;
+
 typedef struct vec2 {
 	float x;
 	float y;
@@ -147,6 +154,17 @@ vec3 mat3_mul(mat3 m, vec3 v) {
 	};
 }
 
+typedef struct Sprite {
+	SDL_Surface* img;
+	vec3 pos;
+} Sprite;
+
+#define MAX_SPRITES 1024
+Sprite sprites[MAX_SPRITES];
+int numSprites = 0;
+
+int AddSprite(const char* path);
+
 SDL_Window* window;
 SDL_Renderer* renderer;
 SDL_Texture* frameTexture;
@@ -229,6 +247,15 @@ rgb SampleSurface(SDL_Surface* surf, int x, int y) {
 	return (rgb){r,g,b};
 }
 
+rgba SampleSurface_rgba(SDL_Surface* surf, int x, int y) {
+	uint8_t* pixelData = surf->pixels;
+	uint8_t r = pixelData[y * surf->pitch + x * 4 + 0];
+	uint8_t g = pixelData[y * surf->pitch + x * 4 + 1];
+	uint8_t b = pixelData[y * surf->pitch + x * 4 + 2];
+	uint8_t a = pixelData[y * surf->pitch + x * 4 + 3];
+	return (rgba){r,g,b,a};
+}
+
 typedef struct Track {
 	SDL_Surface* trackImage;
 	SDL_Surface* attributeImage;
@@ -258,6 +285,16 @@ void Track_Load(Track* tr, const char* path, const char* attr_path) {
 
 	SDL_FreeSurface(surf);
 	SDL_FreeSurface(attr_surf);
+
+	for (int i = 0; i < tr->attributeImage->h; i++) {
+		for (int j = 0; j < tr->attributeImage->w; j++) {
+			rgb c = SampleSurface(tr->attributeImage, j, i);
+			if (memcmp(&c, &(rgb){0, 0, 255}, sizeof(rgb)) == 0) {
+				int s = AddSprite("tree.png");
+				sprites[s].pos = (vec3){j, i, 0};
+			}
+		}
+	}
 }
 
 void Track_Unload(Track* tr) {
@@ -319,15 +356,6 @@ void DrawFloor() {
 	}
 }
 
-typedef struct Sprite {
-	SDL_Surface* img;
-	vec3 pos;
-} Sprite;
-
-#define MAX_SPRITES 1024
-Sprite sprites[MAX_SPRITES];
-int numSprites = 0;
-
 int AddSprite(const char* path) {
 	if (numSprites == MAX_SPRITES) {
 		fprintf(stderr, "Ran out of sprites\n");
@@ -367,8 +395,8 @@ vec2 ProjectPoint(vec3 p) {
 int cmp_sprites(const void* a, const void* b) {
 	Camera* cam = &mainCamera;
 
-	Sprite* sa = a;
-	Sprite* sb = b;
+	const Sprite* sa = a;
+	const Sprite* sb = b;
 
 	float da = vec3_dot(cam->forward, vec3_sub(sa->pos, cam->position));
 	float db = vec3_dot(cam->forward, vec3_sub(sb->pos, cam->position));
@@ -386,12 +414,11 @@ void DrawSprites() {
 
 	qsort(sprites, numSprites, sizeof(Sprite), cmp_sprites);
 
-	// TODO
 	for (int i = 0; i < numSprites; i++) {
 		Sprite* spr = &sprites[i];
 
-		vec3 left3 = vec3_sub(spr->pos, vec3_scale(cam->right, spr->img->w/2));
-		vec3 right3 = vec3_add(spr->pos, vec3_scale(cam->right, spr->img->w/2));
+		vec3 left3 = vec3_sub(spr->pos, vec3_scale(cam->right, spr->img->w/2.0f));
+		vec3 right3 = vec3_add(spr->pos, vec3_scale(cam->right, spr->img->w/2.0f));
 
 		vec3 top3 = vec3_add(spr->pos, vec3_scale(cam->up, spr->img->h));
 
@@ -399,20 +426,25 @@ void DrawSprites() {
 		vec2 right = ProjectPoint(right3);
 		vec2 top = ProjectPoint(top3);
 
-		if (left.x > GAME_WIDTH || right.x < 0 || top.y > GAME_HEIGHT || left.y < 0) {
-			continue;
-		}
+		// if (left.x > GAME_WIDTH || right.x < 0 || top.y > GAME_HEIGHT || left.y < 0) {
+		// 	continue;
+		// }
 
-		for (int y = top.y; y < left.y; y++) {
-			for (int x = left.x; x < right.x; x++) {
-				// SetPixel(x, y, (rgb){255, 255, 255});
+		int leftx = clampf(left.x, 0, GAME_WIDTH);
+		int rightx = clampf(right.x, 0, GAME_WIDTH);
+
+		int topy = clampf(top.y, 0, GAME_HEIGHT);
+		int bottomy = clampf(left.y, 0, GAME_HEIGHT);
+
+		for (int y = topy; y < bottomy; y++) {
+			for (int x = leftx; x < rightx; x++) {
 				int tx = mapf(x, left.x, right.x, 0, spr->img->w);
 				int ty = mapf(y, top.y, left.y, 0, spr->img->h);
-				rgb c = SampleSurface(spr->img, tx, ty);
-				if (c.r == 255 && c.b == 255) {
+				rgba c = SampleSurface_rgba(spr->img, tx, ty);
+				if (c.a < 1) {
 					continue;
 				}
-				SetPixel(x, y, c);
+				SetPixel(x, y, (rgb){c.r,c.g,c.b});
 			}
 		}
 	}
@@ -587,19 +619,13 @@ int main() {
 
 	SDL_SetRelativeMouseMode(true);
 
-	// mainCamera.position = (vec3){920, 585, 20};
-	mainCamera.position = (vec3){0, 0, 50};
+	mainCamera.position = (vec3){920, 585, 20};
+	// mainCamera.position = (vec3){200, 200, 50};
 	Camera_SetFovX(&mainCamera, deg2rad(90));
 	Camera_SetYawPitch(&mainCamera, deg2rad(-90), deg2rad(-20));
 	mainCamera.mode = FreeFlyCamera;
 
 	Track_Load(&track, "mario_circuit_1.png", "mario_circuit_1_attributes.png");
-
-	int N = 20;
-	for (int i = 0; i < N; i++) {
-		int sprite = AddSprite("sus.png");
-		sprites[sprite].pos = (vec3){150 * cosf(2 * M_PI / N * i), 150 * sinf(2 * M_PI / N * i), 0};
-	}
 
     gameRunning = true;
 	frame = 0;
