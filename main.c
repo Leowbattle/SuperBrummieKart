@@ -8,9 +8,9 @@
 #include <string.h>
 #include <math.h>
 
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_image.h>
-#include <SDL2/SDL_ttf.h>
+#include <SDL.h>
+#include <SDL_image.h>
+#include <SDL_ttf.h>
 
 #define GAME_WIDTH 640
 #define GAME_HEIGHT 360
@@ -194,6 +194,10 @@ vec3 mat3_mul(mat3 m, vec3 v) {
 		m.g * v.x + m.h * v.y + m.i * v.z,
 	};
 }
+
+void Transition_init();
+void Game_init();
+void Over_init();
 
 #define MAX_SPRITE_ANGLES 16
 
@@ -428,7 +432,7 @@ void InitPlayerState(PlayerState* ps, const char* path) {
 
 		if (SHOW_PATH_MARKERS) {
 			vec2 point = points[i];
-			int s = AddSprite("player_path_marker.png");
+			int s = AddSprite("res/img/player_path_marker.png");
 			sprites[s].pos = (vec3){point.x, point.y, 0};
 		}
 	}
@@ -455,7 +459,7 @@ void InitEnemyAI(Enemy* enemy, const char* path) {
 
 		if (SHOW_PATH_MARKERS) {
 			vec2 point = points[i];
-			int s = AddSprite("path_marker.png");
+			int s = AddSprite("res/img/path_marker.png");
 			sprites[s].pos = (vec3){point.x, point.y, 0};
 		}
 	}
@@ -516,7 +520,7 @@ void Track_Load(Track* tr, const char* path) {
 			for (int j = 0; j < tr->attributeImage->w; j++) {
 				rgb c = SampleSurface(tr->attributeImage, j, i);
 				if (memcmp(&c, &(rgb){0, 0, 255}, sizeof(rgb)) == 0) {
-					int s = AddSprite("tree.png");
+					int s = AddSprite("res/img/tree.png");
 					sprites[s].pos = (vec3){j, i, 0};
 				}
 			}
@@ -944,7 +948,7 @@ void UpdateFirstPersonCamera() {
 	Camera* cam = &mainCamera;
 	PlayerState* ps = &mainPlayerState;
 
-	float drag;
+	float drag = 0.0f;
 	rgb c = SampleSurface(track.attributeImage, cam->position.x, cam->position.y);
 	if (memcmp(&c, &(rgb){255,0,0}, sizeof(rgb)) == 0) {
 		drag = 5;
@@ -1104,8 +1108,8 @@ SDL_Texture* logo_notext;
 void Menu_init() {
 	gameState = State_Menu;
 
-	logo = IMG_LoadTexture(renderer, "logo.png");
-	logo_notext = IMG_LoadTexture(renderer, "brummie.png");
+	logo = IMG_LoadTexture(renderer, "res/img/logo.png");
+	logo_notext = IMG_LoadTexture(renderer, "res/img/brummie.png");
 }
 
 void Menu_update() {
@@ -1126,9 +1130,9 @@ void Menu_draw() {
 int transition_timer;
 
 const char* trackNames[] = {
-	"tracks/mario_circuit",
-	"tracks/ghost",
-	"tracks/rainbow"
+	"res/tracks/mario_circuit",
+	"res/tracks/ghost",
+	"res/tracks/rainbow"
 };
 
 void Transition_init() {
@@ -1317,17 +1321,17 @@ int main() {
 	SDL_SetRelativeMouseMode(true);
 
 	const char* skyboxPaths[6] = {
-		"skybox/+x.png",
-		"skybox/-x.png",
-		"skybox/+y.png",
-		"skybox/-y.png",
-		"skybox/+z.png",
-		"skybox/-z.png",
+		"res/img/skybox/+x.png",
+		"res/img/skybox/-x.png",
+		"res/img/skybox/+y.png",
+		"res/img/skybox/-y.png",
+		"res/img/skybox/+z.png",
+		"res/img/skybox/-z.png",
 	};
 	LoadSkybox(&mainSkybox, skyboxPaths);
 
-	font = TTF_OpenFont("Blinker-Regular.ttf", 72);
-	font_small = TTF_OpenFont("Blinker-Regular.ttf", 20);
+	font = TTF_OpenFont("res/fonts/Blinker-Regular.ttf", 72);
+	font_small = TTF_OpenFont("res/fonts/Blinker-Regular.ttf", 20);
 	
 	Menu_init();
 	// Game_init();
