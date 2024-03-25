@@ -1,6 +1,6 @@
-yoshi.png
+res/img/bowser.png
 10
-46,502
+80,478
 73,80
 734,64
 744,426

@@ -1,4 +1,4 @@
-yoshi.png
+res/img/yoshi.png
 9
 952,609
 945,399

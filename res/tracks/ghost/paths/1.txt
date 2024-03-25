@@ -1,5 +1,4 @@
-bowser.png
-
+res/img/bowser.png
 12
 92,290
 101,101
