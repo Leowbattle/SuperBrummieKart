@@ -65,7 +65,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Configure
-        run: emcmake cmake -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: emcmake cmake -B build-web -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build-web --parallel
