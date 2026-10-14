@@ -211,6 +211,14 @@ Sprite sprites[MAX_SPRITES];
 int numSprites = 0;
 
 int AddSprite(const char* path);
+int AddSpriteRotations(const char* path);
+
+// Forward declarations for game state transitions.
+// Without these, modern GCC (>= 14) rejects the implicit function
+// declarations as errors, so the project would not build.
+void Transition_init(void);
+void Game_init(void);
+void Over_init(void);
 
 typedef struct Enemy {
 	int sprite;
@@ -307,7 +315,11 @@ void drawStringf(DrawStringInfo* dsi, const char* fmt, ...) {
 			buf = malloc(bufSize);
 		}
 		int ret = vsnprintf(buf, bufSize, fmt, args);
-		if (ret > bufSize) {
+		// vsnprintf returns the length the formatted string *would* have.
+		// If it is >= bufSize the output was truncated (the old ">" check
+		// let a string of exactly bufSize chars through, losing the last
+		// character).
+		if (ret < 0 || ret >= bufSize) {
 			bufSize = ret + 1;
 			buf = realloc(buf, bufSize);
 		}
@@ -321,7 +333,7 @@ void drawStringf(DrawStringInfo* dsi, const char* fmt, ...) {
 }
 
 void SetPixel(int x, int y, rgb colour) {
-	if (x > 0 && x < GAME_WIDTH && y > 0 && y < GAME_HEIGHT) {
+	if (x >= 0 && x < GAME_WIDTH && y >= 0 && y < GAME_HEIGHT) {
 		uint8_t* pixelData = textureData;
 		pixelData[y * rowPitch + x * 3 + 0] = colour.r;
 		pixelData[y * rowPitch + x * 3 + 1] = colour.g;
@@ -391,6 +403,14 @@ void Camera_SetFovY(Camera* cam, float fy) {
 }
 
 rgb SampleSurface(SDL_Surface* surf, int x, int y) {
+	// Clamp to the surface bounds. Callers derive x/y from float maths that
+	// can land exactly on (or beyond) the edge, which used to read past the
+	// end of the pixel buffer (and crash on Windows).
+	if (x < 0) x = 0;
+	else if (x >= surf->w) x = surf->w - 1;
+	if (y < 0) y = 0;
+	else if (y >= surf->h) y = surf->h - 1;
+
 	uint8_t* pixelData = surf->pixels;
 	uint8_t r = pixelData[y * surf->pitch + x * 3 + 0];
 	uint8_t g = pixelData[y * surf->pitch + x * 3 + 1];
@@ -399,6 +419,12 @@ rgb SampleSurface(SDL_Surface* surf, int x, int y) {
 }
 
 rgba SampleSurface_rgba(SDL_Surface* surf, int x, int y) {
+	// Clamp to the surface bounds (see SampleSurface).
+	if (x < 0) x = 0;
+	else if (x >= surf->w) x = surf->w - 1;
+	if (y < 0) y = 0;
+	else if (y >= surf->h) y = surf->h - 1;
+
 	uint8_t* pixelData = surf->pixels;
 	uint8_t r = pixelData[y * surf->pitch + x * 4 + 0];
 	uint8_t g = pixelData[y * surf->pitch + x * 4 + 1];
@@ -419,12 +445,25 @@ PlayerState mainPlayerState;
 
 void InitPlayerState(PlayerState* ps, const char* path) {
 	FILE* f = fopen(path, "r");
+	if (f == NULL) {
+		fprintf(stderr, "Unable to open player path file '%s'\n", path);
+		exit(EXIT_FAILURE);
+	}
 
-	int numPoints;
-	fscanf(f, "%d", &numPoints);
+	int numPoints = 0;
+	if (fscanf(f, "%d", &numPoints) != 1 || numPoints <= 0) {
+		fprintf(stderr, "Invalid player path file '%s'\n", path);
+		fclose(f);
+		exit(EXIT_FAILURE);
+	}
 	vec2* points = malloc(numPoints * sizeof(vec2));
 	for (int i = 0; i < numPoints; i++) {
-		fscanf(f, "%f,%f", &points[i].x, &points[i].y);
+		if (fscanf(f, "%f,%f", &points[i].x, &points[i].y) != 2) {
+			fprintf(stderr, "Invalid player path file '%s'\n", path);
+			free(points);
+			fclose(f);
+			exit(EXIT_FAILURE);
+		}
 
 		if (SHOW_PATH_MARKERS) {
 			vec2 point = points[i];
@@ -432,6 +471,7 @@ void InitPlayerState(PlayerState* ps, const char* path) {
 			sprites[s].pos = (vec3){point.x, point.y, 0};
 		}
 	}
+	fclose(f);
 
 	ps->path = points;
 	ps->pathLen = numPoints;
@@ -442,16 +482,33 @@ void InitPlayerState(PlayerState* ps, const char* path) {
 
 void InitEnemyAI(Enemy* enemy, const char* path) {
 	FILE* f = fopen(path, "r");
+	if (f == NULL) {
+		fprintf(stderr, "Unable to open enemy path file '%s'\n", path);
+		exit(EXIT_FAILURE);
+	}
 	
 	char spritePath[1024];
-	fscanf(f, "%s", spritePath);
+	if (fscanf(f, "%1023s", spritePath) != 1) {
+		fprintf(stderr, "Invalid enemy path file '%s'\n", path);
+		fclose(f);
+		exit(EXIT_FAILURE);
+	}
 	enemy->sprite = AddSpriteRotations(spritePath);
 	
-	int numPoints;
-	fscanf(f, "%d", &numPoints);
+	int numPoints = 0;
+	if (fscanf(f, "%d", &numPoints) != 1 || numPoints <= 0) {
+		fprintf(stderr, "Invalid enemy path file '%s'\n", path);
+		fclose(f);
+		exit(EXIT_FAILURE);
+	}
 	vec2* points = malloc(numPoints * sizeof(vec2));
 	for (int i = 0; i < numPoints; i++) {
-		fscanf(f, "%f,%f", &points[i].x, &points[i].y);
+		if (fscanf(f, "%f,%f", &points[i].x, &points[i].y) != 2) {
+			fprintf(stderr, "Invalid enemy path file '%s'\n", path);
+			free(points);
+			fclose(f);
+			exit(EXIT_FAILURE);
+		}
 
 		if (SHOW_PATH_MARKERS) {
 			vec2 point = points[i];
@@ -459,6 +516,7 @@ void InitEnemyAI(Enemy* enemy, const char* path) {
 			sprites[s].pos = (vec3){point.x, point.y, 0};
 		}
 	}
+	fclose(f);
 	enemy->path = points;
 	enemy->pathLength = numPoints;
 	enemy->pathIndex = -1;
@@ -493,11 +551,17 @@ void Track_Load(Track* tr, const char* path) {
 
 	if (surf->w != surf->h || !IsPowerOfTwo(surf->w)) {
 		fprintf(stderr, "Invalid track size: %dx%d. Track width and height must be the same and a power of 2.\n", surf->w, surf->h);
+		SDL_FreeSurface(surf);
+		exit(EXIT_FAILURE);
 	}
 
 	int size_log2 = log2f(surf->w);
 
 	SDL_Surface* surf2 = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGB24, 0);
+	if (surf2 == NULL) {
+		fprintf(stderr, "Unable to convert track image: %s\n", SDL_GetError());
+		exit(EXIT_FAILURE);
+	}
 	tr->trackImage = surf2;
 	tr->size_log2 = size_log2;
 
@@ -505,7 +569,15 @@ void Track_Load(Track* tr, const char* path) {
 	sprintf(buf, "%s/attributes.png", path);
 
 	SDL_Surface* attr_surf = IMG_Load(buf);
+	if (attr_surf == NULL) {
+		fprintf(stderr, "Unable to load track attributes: %s\n", IMG_GetError());
+		exit(EXIT_FAILURE);
+	}
 	SDL_Surface* attr_surf2 = SDL_ConvertSurfaceFormat(attr_surf, SDL_PIXELFORMAT_RGB24, 0);
+	if (attr_surf2 == NULL) {
+		fprintf(stderr, "Unable to convert track attributes: %s\n", SDL_GetError());
+		exit(EXIT_FAILURE);
+	}
 	tr->attributeImage = attr_surf2;
 
 	SDL_FreeSurface(surf);
@@ -538,14 +610,31 @@ void Track_Load(Track* tr, const char* path) {
 
 	sprintf(buf, "%s/info.txt", path);
 	FILE* f = fopen(buf, "r");
+	if (f == NULL) {
+		fprintf(stderr, "Unable to open track info '%s'\n", buf);
+		exit(EXIT_FAILURE);
+	}
 
 	char trackName[1024];
-	fgets(trackName, sizeof(trackName), f);
-	trackName[strlen(trackName) - 1] = 0;
+	if (fgets(trackName, sizeof(trackName), f) == NULL) {
+		trackName[0] = '\0';
+	}
+	// Strip the trailing newline (and any '\r' from CRLF files). The old
+	// code did `trackName[strlen(trackName) - 1] = 0` unconditionally, which
+	// writes out of bounds when the line is empty.
+	size_t nameLen = strlen(trackName);
+	while (nameLen > 0 && (trackName[nameLen - 1] == '\n' || trackName[nameLen - 1] == '\r')) {
+		trackName[--nameLen] = '\0';
+	}
 	strcpy(tr->trackName, trackName);
 
-	float startX, startY;
-	fscanf(f, "%f,%f", &startX, &startY);
+	float startX = 0, startY = 0;
+	if (fscanf(f, "%f,%f", &startX, &startY) != 2) {
+		fprintf(stderr, "Invalid track info '%s'\n", buf);
+		fclose(f);
+		exit(EXIT_FAILURE);
+	}
+	fclose(f);
 
 	mainCamera.position = (vec3){
 		startX,
@@ -558,8 +647,36 @@ void Track_Load(Track* tr, const char* path) {
 	mainCamera.mode = FirstPerson;
 }
 
+void FreeSprites() {
+	for (int i = 0; i < numSprites; i++) {
+		SDL_FreeSurface(sprites[i].img);
+		sprites[i].img = NULL;
+	}
+	numSprites = 0;
+}
+
 void Track_Unload(Track* tr) {
-	SDL_FreeSurface(tr->trackImage);
+	if (tr->trackImage != NULL) {
+		SDL_FreeSurface(tr->trackImage);
+		tr->trackImage = NULL;
+	}
+	if (tr->attributeImage != NULL) {
+		SDL_FreeSurface(tr->attributeImage);
+		tr->attributeImage = NULL;
+	}
+
+	// Sprites and paths are owned by the track that created them.
+	FreeSprites();
+
+	free(mainPlayerState.path);
+	mainPlayerState.path = NULL;
+	mainPlayerState.pathLen = 0;
+
+	for (int i = 0; i < NUM_ENEMIES; i++) {
+		free(enemies[i].path);
+		enemies[i].path = NULL;
+		enemies[i].pathLength = 0;
+	}
 }
 
 Track track;
@@ -591,7 +708,10 @@ void convert_xyz_to_cube_uv(float x, float y, float z, int *index, float *u, flo
   int isYPositive = y > 0 ? 1 : 0;
   int isZPositive = z > 0 ? 1 : 0;
   
-  float maxAxis, uc, vc;
+  // Initialise up front: a zero-length direction vector matches none of the
+  // faces below, which would otherwise leave maxAxis/uc/vc/*index uninitialised.
+  float maxAxis = 0.0f, uc = 0.0f, vc = 0.0f;
+  *index = 0;
   
   // POSITIVE X
   if (isXPositive && absX >= absY && absX >= absZ) {
@@ -648,6 +768,13 @@ void convert_xyz_to_cube_uv(float x, float y, float z, int *index, float *u, flo
     *index = 5;
   }
 
+  if (maxAxis <= 0.0f) {
+    // Degenerate direction; sample the centre of the face.
+    *u = 0.5f;
+    *v = 0.5f;
+    return;
+  }
+
   // Convert range from -1 to 1 to 0 to 1
   *u = 0.5f * (uc / maxAxis + 1.0f);
   *v = 0.5f * (vc / maxAxis + 1.0f);
@@ -662,7 +789,18 @@ Skybox mainSkybox;
 void LoadSkybox(Skybox* sb, const char** paths) {
 	for (int i = 0; i < 6; i++) {
 		SDL_Surface* surf = IMG_Load(paths[i]);
+		if (surf == NULL) {
+			fprintf(stderr, "Unable to load skybox image '%s': %s\n", paths[i], IMG_GetError());
+			exit(EXIT_FAILURE);
+		}
 		sb->imgs[i] = surf;
+	}
+}
+
+void UnloadSkybox(Skybox* sb) {
+	for (int i = 0; i < 6; i++) {
+		SDL_FreeSurface(sb->imgs[i]);
+		sb->imgs[i] = NULL;
 	}
 }
 
@@ -848,7 +986,9 @@ void DrawSprites() {
 			}
 			rotationIndex = mapf(theta, 0, M_PI, 0, spr->numAngles);
 			rotationIndex %= spr->numAngles * 2;
-			if (rotationIndex > spr->numAngles) {
+			// Must be ">=": rotationIndex == numAngles would otherwise select
+			// a frame one past the end of the sprite sheet.
+			if (rotationIndex >= spr->numAngles) {
 				rotationIndex = rotationIndex - spr->numAngles;
 				flipX = true;
 			}
@@ -934,7 +1074,7 @@ void UpdateFreeFlyCamera() {
 	}
 }
 
-int positions[3];
+int positions[3] = {0, 0, 0};
 
 vec2 velocity = {0};
 void UpdateFirstPersonCamera() {
@@ -944,7 +1084,9 @@ void UpdateFirstPersonCamera() {
 	Camera* cam = &mainCamera;
 	PlayerState* ps = &mainPlayerState;
 
-	float drag;
+	// Must be initialised: the "green" branch below is commented out, so
+	// drag would otherwise be read uninitialised.
+	float drag = 15;
 	rgb c = SampleSurface(track.attributeImage, cam->position.x, cam->position.y);
 	if (memcmp(&c, &(rgb){255,0,0}, sizeof(rgb)) == 0) {
 		drag = 5;
@@ -1073,7 +1215,7 @@ void Enemy_Update(Enemy* enemy) {
 	maxx += 10;
 
 	miny -= 10;
-	maxx += 10;
+	maxy += 10;
 
 	int nextIndex = enemy->pathIndex + 1 == enemy->pathLength ? 0 : enemy->pathIndex + 1;
 	vec2 pathPoint = enemy->path[nextIndex];
@@ -1106,6 +1248,10 @@ void Menu_init() {
 
 	logo = IMG_LoadTexture(renderer, "logo.png");
 	logo_notext = IMG_LoadTexture(renderer, "brummie.png");
+	if (logo == NULL || logo_notext == NULL) {
+		fprintf(stderr, "Unable to load menu textures: %s\n", IMG_GetError());
+		exit(EXIT_FAILURE);
+	}
 }
 
 void Menu_update() {
@@ -1134,7 +1280,9 @@ const char* trackNames[] = {
 void Transition_init() {
 	gameState = State_Transition;
 
-	numSprites = 0;
+	// Release the previous track's surfaces, sprites and paths before loading
+	// the next one. This used to leak everything on every track change.
+	Track_Unload(&track);
 
 	NextTrack();
 
@@ -1153,7 +1301,9 @@ void NextTrack() {
 }
 
 void Transition_update() {
-	transition_timer--;
+	if (transition_timer > 0) {
+		transition_timer--;
+	}
 	if (transition_timer == 0) {
 		Game_init();
 	}
@@ -1307,12 +1457,25 @@ int main() {
     printf("SDL Version: %d.%d.%d\n", sdlVersion.major, sdlVersion.minor, sdlVersion.patch);
     
     window = SDL_CreateWindow("Super Brummie Kart", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, GAME_WIDTH * 2, GAME_HEIGHT * 2, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+	if (window == NULL) {
+		fprintf(stderr, "Unable to create window: %s\n", SDL_GetError());
+		return EXIT_FAILURE;
+	}
+
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_ACCELERATED);
+	if (renderer == NULL) {
+		fprintf(stderr, "Unable to create renderer: %s\n", SDL_GetError());
+		return EXIT_FAILURE;
+	}
 
 	SDL_RenderSetLogicalSize(renderer, GAME_WIDTH, GAME_HEIGHT);
 	SDL_RenderSetIntegerScale(renderer, true);
 
 	frameTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, GAME_WIDTH, GAME_HEIGHT);
+	if (frameTexture == NULL) {
+		fprintf(stderr, "Unable to create frame texture: %s\n", SDL_GetError());
+		return EXIT_FAILURE;
+	}
 
 	SDL_SetRelativeMouseMode(true);
 
@@ -1328,6 +1491,10 @@ int main() {
 
 	font = TTF_OpenFont("Blinker-Regular.ttf", 72);
 	font_small = TTF_OpenFont("Blinker-Regular.ttf", 20);
+	if (font == NULL || font_small == NULL) {
+		fprintf(stderr, "Unable to load font: %s\n", TTF_GetError());
+		return EXIT_FAILURE;
+	}
 	
 	Menu_init();
 	// Game_init();
@@ -1366,6 +1533,20 @@ int main() {
 
 		frame++;
     }
+
+	// Cleanup
+	Track_Unload(&track);
+	UnloadSkybox(&mainSkybox);
+	SDL_DestroyTexture(frameTexture);
+	SDL_DestroyTexture(logo);
+	SDL_DestroyTexture(logo_notext);
+	TTF_CloseFont(font);
+	TTF_CloseFont(font_small);
+	SDL_DestroyRenderer(renderer);
+	SDL_DestroyWindow(window);
+	TTF_Quit();
+	IMG_Quit();
+	SDL_Quit();
 
     return 0;
 }
