@@ -16,9 +16,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  EMSCRIPTEN_VERSION: "6.0.12"
-
 jobs:
   # ---------------------------------------------------------------------------
   # Desktop build: a Linux x86_64 binary bundled with its assets.
@@ -60,14 +57,12 @@ jobs:
   emscripten:
     name: Web (Emscripten)
     runs-on: ubuntu-latest
+    # Official prebuilt toolchain image. This avoids downloading and unpacking
+    # the emsdk toolchain on every run (which occasionally fails when a
+    # download is truncated).
+    container: emscripten/emsdk:6.0.12
     steps:
       - uses: actions/checkout@v7
-
-      - name: Setup Emscripten
-        uses: mymindstorm/setup-emsdk@v16
-        with:
-          version: ${{ env.EMSCRIPTEN_VERSION }}
-          actions-cache-folder: emsdk-cache
 
       - name: Configure
         run: emcmake cmake -B build-web -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -78,7 +73,8 @@ jobs:
       - name: Package
         run: |
           cd build-web
-          zip ../SuperBrummieKart-web.zip index.html index.js index.wasm index.data
+          python3 -m zipfile -c ../SuperBrummieKart-web.zip \
+            index.html index.js index.wasm index.data
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
