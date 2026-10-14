@@ -12,6 +12,10 @@
 #include <SDL2/SDL_image.h>
 #include <SDL2/SDL_ttf.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 #define GAME_WIDTH 640
 #define GAME_HEIGHT 360
 #define ASPECT_RATIO ((float)GAME_WIDTH / GAME_HEIGHT)
@@ -1447,6 +1451,49 @@ void draw() {
 	}
 }
 
+// One frame of the game: consume input, update the world and present it.
+// This is split out of main() so the Emscripten build can drive it from the
+// browser's requestAnimationFrame callback via emscripten_set_main_loop().
+static void MainLoopIteration(void) {
+	mousexrel = 0;
+	mouseyrel = 0;
+
+	SDL_Event ev;
+	while (SDL_PollEvent(&ev)) {
+		switch (ev.type) {
+		case SDL_QUIT:
+			gameRunning = false;
+			break;
+
+		case SDL_KEYDOWN:
+			if (ev.key.keysym.sym == SDLK_ESCAPE) {
+				gameRunning = false;
+			}
+			break;
+
+		case SDL_MOUSEMOTION:
+			mousexrel = ev.motion.xrel;
+			mouseyrel = ev.motion.yrel;
+			break;
+
+		default:
+			break;
+		}
+	}
+
+	update();
+	draw();
+
+	frame++;
+
+	if (!gameRunning) {
+#ifdef __EMSCRIPTEN__
+		// The loop is owned by the browser, so stop it explicitly.
+		emscripten_cancel_main_loop();
+#endif
+	}
+}
+
 int main() {
 	SDL_Init(SDL_INIT_EVERYTHING);
 	IMG_Init(IMG_INIT_PNG);
@@ -1499,40 +1546,19 @@ int main() {
 	Menu_init();
 	// Game_init();
 
-    gameRunning = true;
+	gameRunning = true;
 	frame = 0;
-    while (gameRunning) {
-		mousexrel = 0;
-		mouseyrel = 0;
 
-        SDL_Event ev;
-        while (SDL_PollEvent(&ev)) {
-            switch (ev.type) {
-            case SDL_QUIT:
-				gameRunning = false; 
-                break;
-
-			case SDL_KEYDOWN:
-				if (ev.key.keysym.sym == SDLK_ESCAPE) {
-					gameRunning = false;
-				}
-				break;
-
-			case SDL_MOUSEMOTION:
-				mousexrel = ev.motion.xrel;
-				mouseyrel = ev.motion.yrel;
-				break;
-
-            default:
-                break;
-            }
-        }
-
-		update();
-		draw();
-
-		frame++;
-    }
+#ifdef __EMSCRIPTEN__
+	// The browser can only present a frame from within an animation frame, so
+	// hand the loop over to Emscripten instead of blocking here. This call does
+	// not return (simulate_infinite_loop = 1).
+	emscripten_set_main_loop(MainLoopIteration, 0, 1);
+#else
+	while (gameRunning) {
+		MainLoopIteration();
+	}
+#endif
 
 	// Cleanup
 	Track_Unload(&track);

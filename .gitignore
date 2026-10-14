@@ -1,0 +1,10 @@
+# CMake build directories
+/build/
+/build-*/
+/dist/
+
+# Native build output (old compile.sh / VS Code task)
+/prog
+
+# Editor / OS cruft
+.DS_Store
