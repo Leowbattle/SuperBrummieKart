@@ -1,8 +1,10 @@
 name: Build
 
 on:
+  # Feature branches run through pull_request only, so a branch push doesn't
+  # produce a second, duplicate run alongside the PR run.
   push:
-    branches: ["**"]
+    branches: [master]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
