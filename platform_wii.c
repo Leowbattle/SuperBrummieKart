@@ -2,9 +2,10 @@
 //
 // Two things are fundamentally different from the desktop build: there is no
 // filesystem, so the assets are linked into the executable and read back through
-// memory-backed stdio, and there is no keyboard, so the GameCube pad and the Wii
-// Remote are translated into the SDL scancodes the game already reads (which
-// keeps the game logic itself free of console-specific code).
+// memory-backed stdio, and the console's own input devices - a USB keyboard, the
+// GameCube pad and the Wii Remote - are translated into the SDL scancodes the
+// game already reads (which keeps the game logic itself free of console-specific
+// code).
 
 #include "platform.h"
 
@@ -181,15 +182,18 @@ static int StickOffset(int value, int centre, bool flip) {
 	return flip ? -offset : offset;
 }
 
-// Maps the GameCube pad and the Wii Remote (with or without its nunchuk or
-// classic controller) onto the scancodes the game reads:
+// Maps a USB keyboard, the GameCube pad and the Wii Remote (with or without its
+// nunchuk or classic controller) onto the scancodes the game reads. The pad and
+// the remote share one mapping:
 //
-//   W  accelerate: GC A, remote 2, nunchuk Z, classic A or R
-//   S  brake:      GC B, remote 1, nunchuk C, classic B or L
-//   A/D steer:     left stick or D-pad left/right
-//   SPACE/LSHIFT   fly up/down: left stick or D-pad up/down, GC X/Y, remote A/B
-//   I/K            field of view: GC or classic right stick left/right
-//   RETURN         start the menu: GC START, remote/classic PLUS, or accelerate
+//   W  accelerate: keyboard W, GC A, remote 2, nunchuk Z, classic A or R
+//   S  brake:      keyboard S, GC B, remote 1, nunchuk C, classic B or L
+//   A/D steer:     keyboard A/D, left stick or D-pad left/right
+//   SPACE/LSHIFT   fly up/down: keyboard space/shift, left stick or D-pad
+//                  up/down, GC X/Y, remote A/B
+//   I/K            field of view: keyboard I/K, GC or classic right stick
+//   RETURN         start the menu: keyboard Enter, GC START, remote or classic
+//                  PLUS, or accelerate
 //
 // Holding L+R+START on the GameCube pad, MINUS+PLUS on the remote or L+R+PLUS on
 // the classic controller quits the game (HOME is deliberately left alone as the
@@ -200,6 +204,16 @@ const uint8_t* Platform_PollKeyboard(int* numKeys) {
 
 	memset(keyboardState, 0, sizeof(keyboardState));
 	*numKeys = SDL_NUM_SCANCODES;
+
+	// SDL's Wii event pump reads the USB keyboard plugged into the console and
+	// tracks its keys, so merging that state in gives the game the same keys it
+	// has on the desktop. Everything below is only added to it: the pad and the
+	// remote can be used with or without a keyboard.
+	int keyboardKeys = 0;
+	const uint8_t* keyboard = SDL_GetKeyboardState(&keyboardKeys);
+	if (keyboard != NULL) {
+		memcpy(keyboardState, keyboard, SDL_min(keyboardKeys, SDL_NUM_SCANCODES));
+	}
 
 	const u16 pad = PAD_ButtonsHeld(0);
 	const s8 padStickX = PAD_StickX(0);

@@ -79,19 +79,21 @@ Then build (this finds devkitPro in `$DEVKITPRO`, `/opt/devkitpro` or
 
 The console build has no working directory to load assets from, so every asset is
 linked into the executable and read back through memory-backed stdio;
-`scripts/embed-assets.py` generates the blob during the build. There is also no
-keyboard, so the GameCube pad, the Wii Remote and its nunchuk/classic controller
-expansions are translated into the keyboard scancodes the game already reads:
+`scripts/embed-assets.py` generates the blob during the build. The console's own
+input devices are translated into the scancodes the game already reads, so the
+game logic runs unchanged: a USB keyboard uses the same keys as the desktop
+build, and the GameCube pad and Wii Remote (with or without its nunchuk or
+classic controller) are mapped onto those same scancodes.
 
-| Game action   | GameCube pad          | Wii Remote                      |
-| ------------- | --------------------- | ------------------------------- |
-| Accelerate    | A                     | 2, nunchuk Z, classic A / R     |
-| Brake/reverse | B                     | 1, nunchuk C, classic B / L     |
-| Steer         | left stick, D-pad     | D-pad, nunchuk or classic stick |
-| Fly up/down   | X / Y, stick up/down  | A / B, stick up/down            |
-| Zoom camera   | C-stick left/right    | -                               |
-| Start race    | START (or A)          | PLUS (or 2)                     |
-| Quit          | L + R + START         | MINUS + PLUS, classic L + R + PLUS |
+| Game action   | USB keyboard | GameCube pad         | Wii Remote                      |
+| ------------- | ------------ | -------------------- | ------------------------------- |
+| Accelerate    | W            | A                    | 2, nunchuk Z, classic A / R     |
+| Brake/reverse | S            | B                    | 1, nunchuk C, classic B / L     |
+| Steer         | A / D        | left stick, D-pad    | D-pad, nunchuk or classic stick |
+| Fly up/down   | Space/Shift  | X / Y, stick up/down | A / B, stick up/down            |
+| Zoom camera   | I / K        | C-stick left/right   | -                               |
+| Start race    | Return       | START (or A)         | PLUS (or 2)                     |
+| Quit          | -            | L + R + START        | MINUS + PLUS, classic L + R + PLUS |
 
 Runs in the [Dolphin](https://dolphin-emu.org/) emulator:
 
