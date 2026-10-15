@@ -42,6 +42,8 @@ if(EMSCRIPTEN)
     # Web (Emscripten) build
     # ------------------------------------------------------------------
 
+    target_sources(superbrummiekart PRIVATE platform_sdl.c)
+
     # Emscripten ships its own SDL2 / SDL2_image / SDL2_ttf ports.
     set(SDL_PORT_FLAGS
         -sUSE_SDL=2
@@ -72,10 +74,96 @@ if(EMSCRIPTEN)
         OUTPUT_NAME "index"
         SUFFIX ".html")
 
+elseif(CMAKE_SYSTEM_NAME STREQUAL "NintendoWii")
+    # ------------------------------------------------------------------
+    # Nintendo Wii build (devkitPro toolchain, see compile-wii.sh)
+    # ------------------------------------------------------------------
+
+    target_sources(superbrummiekart PRIVATE platform_wii.c)
+
+    # SDL_main.h redefines main() as SDL_main() on the Wii, but the game runs its
+    # own main loop and does not use SDL2main.
+    target_compile_definitions(superbrummiekart PRIVATE SDL_MAIN_HANDLED)
+
+    # devkitPro's portlibs provide CMake configs; the -static variants are the
+    # ones that actually exist for the Wii targets.
+    find_package(SDL2 CONFIG REQUIRED)
+    find_package(SDL2_image CONFIG REQUIRED)
+    find_package(SDL2_ttf CONFIG REQUIRED)
+    # The wii-sdl2_ttf CMake config forgets the brotli libraries that its
+    # bundled FreeType needs. Wrapping it in an interface library puts them after
+    # FreeType on the link line, which static linking requires.
+    add_library(sdl2_ttf_with_deps INTERFACE)
+    target_link_libraries(sdl2_ttf_with_deps INTERFACE
+        SDL2_ttf::SDL2_ttf-static
+        brotlidec
+        brotlicommon)
+    target_link_libraries(superbrummiekart PRIVATE
+        SDL2::SDL2
+        SDL2_image::SDL2_image-static
+        sdl2_ttf_with_deps)
+
+    # The console has no filesystem, so link every asset into the executable and
+    # let the platform layer read it back from memory.
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+    set(EMBEDDED_ASSETS_NAME embedded_assets)
+    set(EMBEDDED_ASSETS_DIR ${CMAKE_CURRENT_BINARY_DIR}/assets)
+    set(EMBEDDED_ASSETS_BLOB ${EMBEDDED_ASSETS_DIR}/${EMBEDDED_ASSETS_NAME}.dat)
+
+    set(EMBEDDED_ASSET_PATHS ${ASSET_FILES})
+    foreach(dir IN LISTS ASSET_DIRS)
+        file(GLOB_RECURSE dirFiles RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} "${dir}/*")
+        list(APPEND EMBEDDED_ASSET_PATHS ${dirFiles})
+    endforeach()
+
+    # Recursive globs also report directories, which cannot be embedded.
+    set(EMBEDDED_ASSETS "")
+    foreach(asset IN LISTS EMBEDDED_ASSET_PATHS)
+        if(NOT IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${asset}")
+            list(APPEND EMBEDDED_ASSETS "${asset}")
+        endif()
+    endforeach()
+    list(SORT EMBEDDED_ASSETS)
+    list(REMOVE_DUPLICATES EMBEDDED_ASSETS)
+
+    add_custom_command(
+        OUTPUT ${EMBEDDED_ASSETS_BLOB}
+               ${EMBEDDED_ASSETS_DIR}/${EMBEDDED_ASSETS_NAME}.c
+               ${EMBEDDED_ASSETS_DIR}/${EMBEDDED_ASSETS_NAME}.h
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${EMBEDDED_ASSETS_DIR}
+        COMMAND Python3::Interpreter
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/embed-assets.py
+                --source-dir ${CMAKE_CURRENT_SOURCE_DIR}
+                --output-dir ${EMBEDDED_ASSETS_DIR}
+                --name ${EMBEDDED_ASSETS_NAME}
+                ${EMBEDDED_ASSETS}
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/scripts/embed-assets.py ${EMBEDDED_ASSETS}
+        COMMENT "Embedding ${EMBEDDED_ASSETS_NAME} for the Wii"
+        VERBATIM)
+
+    target_sources(superbrummiekart PRIVATE
+        ${EMBEDDED_ASSETS_DIR}/${EMBEDDED_ASSETS_NAME}.c)
+    target_include_directories(superbrummiekart PRIVATE ${EMBEDDED_ASSETS_DIR})
+
+    # bin2s turns the blob into an assembly file and a header declaring its
+    # symbol; linking the object library adds that header's directory to the
+    # include path. dkp_add_embedded_binary_library() refuses paths that do not
+    # exist yet, so the blob is described by a target instead of a plain path.
+    include(${DEVKITPRO}/cmake/dkp-embedded-binary.cmake)
+    add_custom_target(superbrummiekart_assets_blob DEPENDS ${EMBEDDED_ASSETS_BLOB})
+    dkp_set_target_file(superbrummiekart_assets_blob ${EMBEDDED_ASSETS_BLOB})
+    dkp_add_embedded_binary_library(superbrummiekart_assets superbrummiekart_assets_blob)
+    target_link_libraries(superbrummiekart PRIVATE superbrummiekart_assets)
+
+    ogc_create_dol(superbrummiekart)
+
 else()
     # ------------------------------------------------------------------
     # Desktop (native) build
     # ------------------------------------------------------------------
+
+    target_sources(superbrummiekart PRIVATE platform_sdl.c)
 
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(SDL2 REQUIRED sdl2)

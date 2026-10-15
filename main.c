@@ -12,6 +12,8 @@
 #include <SDL2/SDL_image.h>
 #include <SDL2/SDL_ttf.h>
 
+#include "platform.h"
+
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -201,11 +203,23 @@ vec3 mat3_mul(mat3 m, vec3 v) {
 
 #define MAX_SPRITE_ANGLES 16
 
-typedef struct Sprite {
-	SDL_Surface* img;
-	int numAngles;
+// Sprite images are shared between the sprites that use them: the track has
+// one tree image for its ~75 trees, and uploading a texture per instance
+// would cost tens of megabytes.
+typedef struct SpriteImage {
+	char path[256];
+	SDL_Texture* texture;
 	int w;
 	int h;
+	int numAngles;
+} SpriteImage;
+
+#define MAX_SPRITE_IMAGES 8
+SpriteImage spriteImages[MAX_SPRITE_IMAGES];
+int numSpriteImages = 0;
+
+typedef struct Sprite {
+	SpriteImage* img;
 	vec3 pos;
 	float angle;
 } Sprite;
@@ -245,9 +259,6 @@ void NextTrack();
 
 SDL_Window* window;
 SDL_Renderer* renderer;
-SDL_Texture* frameTexture;
-void* textureData;
-int rowPitch;
 
 TTF_Font* font;
 TTF_Font* font_small;
@@ -336,15 +347,6 @@ void drawStringf(DrawStringInfo* dsi, const char* fmt, ...) {
 	}
 }
 
-void SetPixel(int x, int y, rgb colour) {
-	if (x >= 0 && x < GAME_WIDTH && y >= 0 && y < GAME_HEIGHT) {
-		uint8_t* pixelData = textureData;
-		pixelData[y * rowPitch + x * 3 + 0] = colour.r;
-		pixelData[y * rowPitch + x * 3 + 1] = colour.g;
-		pixelData[y * rowPitch + x * 3 + 2] = colour.b;
-	}
-}
-
 bool gameRunning;
 int frame;
 float globalTime = 0;
@@ -422,21 +424,6 @@ rgb SampleSurface(SDL_Surface* surf, int x, int y) {
 	return (rgb){r,g,b};
 }
 
-rgba SampleSurface_rgba(SDL_Surface* surf, int x, int y) {
-	// Clamp to the surface bounds (see SampleSurface).
-	if (x < 0) x = 0;
-	else if (x >= surf->w) x = surf->w - 1;
-	if (y < 0) y = 0;
-	else if (y >= surf->h) y = surf->h - 1;
-
-	uint8_t* pixelData = surf->pixels;
-	uint8_t r = pixelData[y * surf->pitch + x * 4 + 0];
-	uint8_t g = pixelData[y * surf->pitch + x * 4 + 1];
-	uint8_t b = pixelData[y * surf->pitch + x * 4 + 2];
-	uint8_t a = pixelData[y * surf->pitch + x * 4 + 3];
-	return (rgba){r,g,b,a};
-}
-
 typedef struct PlayerState {
 	vec2* path;
 	int pathLen;
@@ -448,7 +435,7 @@ typedef struct PlayerState {
 PlayerState mainPlayerState;
 
 void InitPlayerState(PlayerState* ps, const char* path) {
-	FILE* f = fopen(path, "r");
+	FILE* f = Asset_OpenFile(path);
 	if (f == NULL) {
 		fprintf(stderr, "Unable to open player path file '%s'\n", path);
 		exit(EXIT_FAILURE);
@@ -485,7 +472,7 @@ void InitPlayerState(PlayerState* ps, const char* path) {
 }
 
 void InitEnemyAI(Enemy* enemy, const char* path) {
-	FILE* f = fopen(path, "r");
+	FILE* f = Asset_OpenFile(path);
 	if (f == NULL) {
 		fprintf(stderr, "Unable to open enemy path file '%s'\n", path);
 		exit(EXIT_FAILURE);
@@ -533,7 +520,7 @@ void InitEnemyAI(Enemy* enemy, const char* path) {
 }
 
 typedef struct Track {
-	SDL_Surface* trackImage;
+	SDL_Texture* trackImage;
 	SDL_Surface* attributeImage;
 	int size_log2;
 	char trackName[1024];
@@ -541,13 +528,53 @@ typedef struct Track {
 
 Camera mainCamera;
 
+// Turns a track image into a texture. The software renderer treated magenta
+// as a hole in the track and let the sky show through, so those texels are
+// punched out of the alpha channel. The image is large (1024x1024), so the
+// keyed copy replaces the converted surface instead of being kept alongside
+// it.
+SDL_Texture* Track_CreateTexture(SDL_Surface* surf) {
+	SDL_Surface* keyed = SDL_CreateRGBSurfaceWithFormat(0, surf->w, surf->h, 32, SDL_PIXELFORMAT_RGBA32);
+	if (keyed == NULL) {
+		fprintf(stderr, "Unable to allocate the track texture: %s\n", SDL_GetError());
+		exit(EXIT_FAILURE);
+	}
+
+	for (int y = 0; y < surf->h; y++) {
+		uint8_t* src = (uint8_t*)surf->pixels + y * surf->pitch;
+		uint8_t* dst = (uint8_t*)keyed->pixels + y * keyed->pitch;
+
+		for (int x = 0; x < surf->w; x++) {
+			uint8_t r = src[x * 3 + 0];
+			uint8_t g = src[x * 3 + 1];
+			uint8_t b = src[x * 3 + 2];
+
+			dst[x * 4 + 0] = r;
+			dst[x * 4 + 1] = g;
+			dst[x * 4 + 2] = b;
+			dst[x * 4 + 3] = (r == 255 && g == 0 && b == 255) ? 0 : 255;
+		}
+	}
+
+	SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, keyed);
+	SDL_FreeSurface(keyed);
+
+	if (texture == NULL) {
+		fprintf(stderr, "Unable to upload the track image: %s\n", SDL_GetError());
+		exit(EXIT_FAILURE);
+	}
+	SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+	SDL_SetTextureScaleMode(texture, SDL_ScaleModeNearest);
+	return texture;
+}
+
 void Track_Load(Track* tr, const char* path) {
 	char buf[1024];
 
 	//memset(buf, 0, sizeof(buf));
 	sprintf(buf, "%s/track.png", path);
 
-	SDL_Surface* surf = IMG_Load(buf);
+	SDL_Surface* surf = Asset_LoadSurface(buf);
 	if (surf == NULL) {
 		fprintf(stderr, "Unable to load track: %s\n", IMG_GetError());
 		exit(EXIT_FAILURE);
@@ -566,13 +593,14 @@ void Track_Load(Track* tr, const char* path) {
 		fprintf(stderr, "Unable to convert track image: %s\n", SDL_GetError());
 		exit(EXIT_FAILURE);
 	}
-	tr->trackImage = surf2;
+	tr->trackImage = Track_CreateTexture(surf2);
 	tr->size_log2 = size_log2;
+	SDL_FreeSurface(surf2);
 
 	//memset(buf, 0, sizeof(buf));
 	sprintf(buf, "%s/attributes.png", path);
 
-	SDL_Surface* attr_surf = IMG_Load(buf);
+	SDL_Surface* attr_surf = Asset_LoadSurface(buf);
 	if (attr_surf == NULL) {
 		fprintf(stderr, "Unable to load track attributes: %s\n", IMG_GetError());
 		exit(EXIT_FAILURE);
@@ -613,7 +641,7 @@ void Track_Load(Track* tr, const char* path) {
 	InitEnemyAI(&enemies[1], buf);
 
 	sprintf(buf, "%s/info.txt", path);
-	FILE* f = fopen(buf, "r");
+	FILE* f = Asset_OpenFile(buf);
 	if (f == NULL) {
 		fprintf(stderr, "Unable to open track info '%s'\n", buf);
 		exit(EXIT_FAILURE);
@@ -652,16 +680,18 @@ void Track_Load(Track* tr, const char* path) {
 }
 
 void FreeSprites() {
-	for (int i = 0; i < numSprites; i++) {
-		SDL_FreeSurface(sprites[i].img);
-		sprites[i].img = NULL;
+	for (int i = 0; i < numSpriteImages; i++) {
+		SDL_DestroyTexture(spriteImages[i].texture);
+		spriteImages[i].texture = NULL;
+		spriteImages[i].path[0] = '\0';
 	}
+	numSpriteImages = 0;
 	numSprites = 0;
 }
 
 void Track_Unload(Track* tr) {
 	if (tr->trackImage != NULL) {
-		SDL_FreeSurface(tr->trackImage);
+		SDL_DestroyTexture(tr->trackImage);
 		tr->trackImage = NULL;
 	}
 	if (tr->attributeImage != NULL) {
@@ -684,22 +714,6 @@ void Track_Unload(Track* tr) {
 }
 
 Track track;
-
-void VisualizeRayDirections() {
-	for (int i = 0; i < GAME_HEIGHT; i++) {
-		for (int j = 0; j < GAME_WIDTH; j++) {
-			float x = mapf(j, 0, GAME_WIDTH, -1, 1);
-			float y = mapf(i, 0, GAME_HEIGHT, 1, -1);
-
-			vec3 dir = vec3_scale(vec3_normalize(vec3_add(
-				vec3_scale(mainCamera.forward, mainCamera.cam_dist), 
-				vec3_add(vec3_scale(mainCamera.right, x * GAME_WIDTH / 2), vec3_scale(mainCamera.up, y * GAME_HEIGHT / 2)))), 255);
-
-			// SetPixel(j, i, (rgb){(uint8_t)(j ^ i), 0, 0});
-			SetPixel(j, i, (rgb){fabsf(dir.x), fabsf(dir.y), fabsf(dir.z)});
-		}
-	}
-}
 
 // https://en.wikipedia.org/wiki/Cube_mapping
 void convert_xyz_to_cube_uv(float x, float y, float z, int *index, float *u, float *v)
@@ -784,100 +798,396 @@ void convert_xyz_to_cube_uv(float x, float y, float z, int *index, float *u, flo
   *v = 0.5f * (vc / maxAxis + 1.0f);
 }
 
+// The sky, floor and sprites are drawn as textured geometry by the GPU. They
+// used to be rasterised into a streaming texture one pixel at a time, which
+// does not fit in the Wii's frame budget. Vertices are batched per texture so
+// that a whole scene element costs a single draw call.
+#define MAX_RENDER_VERTICES 8192
+SDL_Vertex renderVertices[MAX_RENDER_VERTICES];
+int numRenderVertices = 0;
+SDL_Texture* batchTexture = NULL;
+
+void Renderer_Flush() {
+	if (numRenderVertices > 0) {
+		if (SDL_RenderGeometry(renderer, batchTexture, renderVertices, numRenderVertices, NULL, 0) < 0) {
+			fprintf(stderr, "Unable to draw geometry: %s\n", SDL_GetError());
+		}
+		numRenderVertices = 0;
+	}
+	batchTexture = NULL;
+}
+
+// Claims room for n vertices in the batch, flushing first if the texture
+// changed or the batch is full.
+SDL_Vertex* Renderer_Reserve(SDL_Texture* texture, int n) {
+	if (texture != batchTexture || numRenderVertices + n > MAX_RENDER_VERTICES) {
+		Renderer_Flush();
+		batchTexture = texture;
+	}
+
+	SDL_Vertex* v = &renderVertices[numRenderVertices];
+	numRenderVertices += n;
+	return v;
+}
+
+void Renderer_Vertex(SDL_Vertex* v, float x, float y, float u, float vTex) {
+	v->position.x = x;
+	v->position.y = y;
+	v->color = (SDL_Color){0xff, 0xff, 0xff, 0xff};
+	v->tex_coord.x = u;
+	v->tex_coord.y = vTex;
+}
+
+void Renderer_Triangle(SDL_Texture* texture, const SDL_Vertex* a, const SDL_Vertex* b, const SDL_Vertex* c) {
+	SDL_Vertex* v = Renderer_Reserve(texture, 3);
+	v[0] = *a;
+	v[1] = *b;
+	v[2] = *c;
+}
+
+// corners: top left, top right, bottom right, bottom left.
+void Renderer_Quad(SDL_Texture* texture, const SDL_Vertex* corners) {
+	SDL_Vertex* v = Renderer_Reserve(texture, 6);
+	v[0] = corners[0];
+	v[1] = corners[1];
+	v[2] = corners[2];
+	v[3] = corners[0];
+	v[4] = corners[2];
+	v[5] = corners[3];
+}
+
 typedef struct Skybox {
-	SDL_Surface* imgs[6];
+	SDL_Texture* imgs[6];
 } Skybox;
 
 Skybox mainSkybox;
 
 void LoadSkybox(Skybox* sb, const char** paths) {
 	for (int i = 0; i < 6; i++) {
-		SDL_Surface* surf = IMG_Load(paths[i]);
+		SDL_Surface* surf = Asset_LoadSurface(paths[i]);
 		if (surf == NULL) {
 			fprintf(stderr, "Unable to load skybox image '%s': %s\n", paths[i], IMG_GetError());
 			exit(EXIT_FAILURE);
 		}
-		sb->imgs[i] = surf;
+
+		SDL_Surface* converted = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGB24, 0);
+		SDL_FreeSurface(surf);
+		if (converted == NULL) {
+			fprintf(stderr, "Unable to convert skybox image '%s': %s\n", paths[i], SDL_GetError());
+			exit(EXIT_FAILURE);
+		}
+
+		sb->imgs[i] = SDL_CreateTextureFromSurface(renderer, converted);
+		SDL_FreeSurface(converted);
+
+		if (sb->imgs[i] == NULL) {
+			fprintf(stderr, "Unable to upload skybox image '%s': %s\n", paths[i], SDL_GetError());
+			exit(EXIT_FAILURE);
+		}
+		SDL_SetTextureBlendMode(sb->imgs[i], SDL_BLENDMODE_NONE);
+		SDL_SetTextureScaleMode(sb->imgs[i], SDL_ScaleModeNearest);
 	}
 }
 
 void UnloadSkybox(Skybox* sb) {
 	for (int i = 0; i < 6; i++) {
-		SDL_FreeSurface(sb->imgs[i]);
+		SDL_DestroyTexture(sb->imgs[i]);
 		sb->imgs[i] = NULL;
 	}
 }
 
-void DrawSky(Skybox* sb) {
-	for (int i = 0; i < GAME_HEIGHT; i++) {
-		for (int j = 0; j < GAME_WIDTH; j++) {
-			float x = mapf(j, 0, GAME_WIDTH, -1, 1);
-			float y = mapf(i, 0, GAME_HEIGHT, 1, -1);
+// A cube map face in the layout convert_xyz_to_cube_uv() describes. The
+// direction of a point on the face is base + dirA*a + dirB*b with a and b in
+// [-1, 1], and u/v (as fractions of the face image) are linear in a and b:
+// index = u0 + uA*a + uB*b, likewise for v.
+typedef struct SkyFace {
+	vec3 base;
+	vec3 dirA;
+	vec3 dirB;
+	float u0, uA, uB;
+	float v0, vA, vB;
+} SkyFace;
 
-			vec3 dir = vec3_scale(vec3_normalize(vec3_add(
-				vec3_scale(mainCamera.forward, mainCamera.cam_dist), 
-				vec3_add(vec3_scale(mainCamera.right, x * GAME_WIDTH / 2), vec3_scale(mainCamera.up, y * GAME_HEIGHT / 2)))), 255);
+SkyFace skyFaces[6] = {
+	// +X: u goes +z to -z, v goes -y to +y
+	{{ 1,  0,  0}, {0, 0, 1}, {0, 1, 0}, 0.5f, -0.5f,  0.0f, 0.5f, 0.0f,  0.5f},
+	// -X: u goes -z to +z, v goes -y to +y
+	{{-1,  0,  0}, {0, 0, 1}, {0, 1, 0}, 0.5f,  0.5f,  0.0f, 0.5f, 0.0f,  0.5f},
+	// +Y: u goes -x to +x, v goes +z to -z
+	{{ 0,  1,  0}, {1, 0, 0}, {0, 0, 1}, 0.5f,  0.5f,  0.0f, 0.5f, 0.0f, -0.5f},
+	// -Y: u goes -x to +x, v goes -z to +z
+	{{ 0, -1,  0}, {1, 0, 0}, {0, 0, 1}, 0.5f,  0.5f,  0.0f, 0.5f, 0.0f,  0.5f},
+	// +Z: u goes -x to +x, v goes -y to +y
+	{{ 0,  0,  1}, {1, 0, 0}, {0, 1, 0}, 0.5f,  0.5f,  0.0f, 0.5f, 0.0f,  0.5f},
+	// -Z: u goes +x to -x, v goes -y to +y
+	{{ 0,  0, -1}, {1, 0, 0}, {0, 1, 0}, 0.5f, -0.5f,  0.0f, 0.5f, 0.0f,  0.5f},
+};
 
-			int index;
-			float u;
-			float v;
-			convert_xyz_to_cube_uv(dir.x, dir.y, dir.z, &index, &u, &v);
+// Directions closer to the plane of the screen than this would project to
+// infinity, so they are clipped away.
+#define SKY_NEAR 0.1f
 
-			int tx = mapf(u, 0, 1, 0, sb->imgs[0]->w);
-			int ty = mapf(v, 0, 1, 0, sb->imgs[0]->h);
+// One corner of a skybox cell: its direction and the texel it samples.
+typedef struct SkyVertex {
+	vec3 dir;
+	float u;
+	float v;
+} SkyVertex;
 
-			rgb colour = SampleSurface(sb->imgs[index], tx, ty);
+vec3 SkyFace_Dir(SkyFace* face, float a, float b) {
+	return vec3_add(face->base, vec3_add(vec3_scale(face->dirA, a), vec3_scale(face->dirB, b)));
+}
 
-			// SetPixel(j, i, (rgb){(uint8_t)(j ^ i), 0, 0});
-			SetPixel(j, i, colour);
+// A face is a flat convex quad, so if all of its corners are behind the
+// camera the same is true of every point on it.
+bool SkyFace_IsBehind(SkyFace* face) {
+	for (int i = 0; i < 4; i++) {
+		float a = (i == 1 || i == 2) ? 1.0f : -1.0f;
+		float b = (i >= 2) ? 1.0f : -1.0f;
+		if (vec3_dot(SkyFace_Dir(face, a, b), mainCamera.forward) >= SKY_NEAR) {
+			return false;
 		}
+	}
+	return true;
+}
+
+// Clips a convex polygon against the near plane. Both the direction and the
+// texture coordinate are linear along an edge, and a clipped edge projects
+// exactly (the projection is projective), so interpolating all three between
+// the edge's endpoints is correct.
+int SkyVertex_Clip(const SkyVertex* in, int n, SkyVertex* out) {
+	int m = 0;
+	for (int i = 0; i < n; i++) {
+		const SkyVertex* a = &in[i];
+		const SkyVertex* b = &in[(i + 1) % n];
+
+		float da = vec3_dot(a->dir, mainCamera.forward) - SKY_NEAR;
+		float db = vec3_dot(b->dir, mainCamera.forward) - SKY_NEAR;
+
+		if (da >= 0) {
+			out[m++] = *a;
+		}
+		if ((da >= 0) != (db >= 0)) {
+			float t = da / (da - db);
+			out[m].dir = vec3_add(a->dir, vec3_scale(vec3_sub(b->dir, a->dir), t));
+			out[m].u = a->u + t * (b->u - a->u);
+			out[m].v = a->v + t * (b->v - a->v);
+			m++;
+		}
+	}
+	return m;
+}
+
+void DrawSkyCell(Skybox* sb, int face, float a0, float a1, float b0, float b1) {
+	SkyFace* f = &skyFaces[face];
+	SDL_Texture* texture = sb->imgs[face];
+
+	SkyVertex corners[4];
+	int numInFront = 0;
+	for (int i = 0; i < 4; i++) {
+		float a = (i == 1 || i == 2) ? a1 : a0;
+		float b = (i >= 2) ? b1 : b0;
+
+		corners[i].dir = SkyFace_Dir(f, a, b);
+		corners[i].u = f->u0 + f->uA * a + f->uB * b;
+		corners[i].v = f->v0 + f->vA * a + f->vB * b;
+
+		if (vec3_dot(corners[i].dir, mainCamera.forward) >= SKY_NEAR) {
+			numInFront++;
+		}
+	}
+
+	if (numInFront == 0) {
+		return;
+	}
+
+	SkyVertex clipped[5];
+	SkyVertex* poly = corners;
+	int numCorners = 4;
+	if (numInFront < 4) {
+		numCorners = SkyVertex_Clip(corners, 4, clipped);
+		poly = clipped;
+		if (numCorners < 3) {
+			return;
+		}
+	}
+
+	SDL_Vertex v[5];
+	float minX = 0, maxX = 0, minY = 0, maxY = 0;
+	for (int i = 0; i < numCorners; i++) {
+		float pf = vec3_dot(poly[i].dir, mainCamera.forward);
+		float pr = vec3_dot(poly[i].dir, mainCamera.right);
+		float pu = vec3_dot(poly[i].dir, mainCamera.up);
+
+		float x = GAME_WIDTH / 2.0f + mainCamera.cam_dist * pr / pf;
+		float y = GAME_HEIGHT / 2.0f - mainCamera.cam_dist * pu / pf;
+		Renderer_Vertex(&v[i], x, y, poly[i].u, poly[i].v);
+
+		if (i == 0 || x < minX) minX = x;
+		if (i == 0 || x > maxX) maxX = x;
+		if (i == 0 || y < minY) minY = y;
+		if (i == 0 || y > maxY) maxY = y;
+	}
+
+	if (maxX < 0 || minX > GAME_WIDTH || maxY < 0 || minY > GAME_HEIGHT) {
+		return;
+	}
+
+	for (int i = 1; i + 1 < numCorners; i++) {
+		Renderer_Triangle(texture, &v[0], &v[i], &v[i + 1]);
 	}
 }
 
-void DrawFloor() {
-	vec3 pos = mainCamera.position;
+// Texture coordinates are interpolated across a triangle, so a whole face
+// drawn as one quad would smear the image near its corners. Each face is
+// therefore cut into a grid of small quads, which keeps the error well below
+// a pixel and leaves the face boundaries exact.
+#define SKY_FACE_CELLS 8
 
-	for (int i = 0; i < GAME_HEIGHT; i++) {
-		for (int j = 0; j < GAME_WIDTH; j++) {
-			float x = mapf(j, 0, GAME_WIDTH, -1, 1);
-			float y = mapf(i, 0, GAME_HEIGHT, 1, -1);
+void DrawSky(Skybox* sb) {
+	for (int face = 0; face < 6; face++) {
+		if (SkyFace_IsBehind(&skyFaces[face])) {
+			continue;
+		}
 
-			vec3 dir = vec3_add(
-				vec3_scale(mainCamera.forward, mainCamera.cam_dist), 
-				vec3_add(vec3_scale(mainCamera.right, x * GAME_WIDTH / 2), vec3_scale(mainCamera.up, y * GAME_HEIGHT / 2)));
+		for (int i = 0; i < SKY_FACE_CELLS; i++) {
+			float a0 = mapf(i, 0, SKY_FACE_CELLS, -1, 1);
+			float a1 = mapf(i + 1, 0, SKY_FACE_CELLS, -1, 1);
 
-			float t = -pos.z / dir.z;
+			for (int j = 0; j < SKY_FACE_CELLS; j++) {
+				float b0 = mapf(j, 0, SKY_FACE_CELLS, -1, 1);
+				float b1 = mapf(j + 1, 0, SKY_FACE_CELLS, -1, 1);
 
-			if (t < 0) {
-				continue;
+				DrawSkyCell(sb, face, a0, a1, b0, b1);
 			}
-
-			float fx = pos.x + t * dir.x;
-			float fy = pos.y + t * dir.y;
-
-			SDL_Surface* surf = track.trackImage;
-
-			if (fx < 0 || fx > surf->w || fy < 0 || fy > surf->h) {
-				// SetPixel(j, i, (rgb){0, 0, 0});
-				continue;
-			}
-
-			int mask = (1 << track.size_log2) - 1;
-			int tx = (int)fx & mask;
-			int ty = (int)fy & mask;
-
-			uint8_t* pixelData = surf->pixels;
-			uint8_t r = pixelData[ty * surf->pitch + tx * 3 + 0];
-			uint8_t g = pixelData[ty * surf->pitch + tx * 3 + 1];
-			uint8_t b = pixelData[ty * surf->pitch + tx * 3 + 2];
-
-			if (r == 255 && g == 0 && b == 255) {
-				continue;
-			}
-
-			SetPixel(j, i, (rgb){r, g, b});
 		}
 	}
+
+	Renderer_Flush();
+}
+
+// The ground point seen through pixel (j, y) is an affine function of j:
+// value = valueAt0 + step * j. That holds because the camera basis is
+// horizontal, so the distance to the floor only depends on the row.
+bool Floor_Row(Camera* cam, float y, vec3* valueAt0, vec3* step) {
+	float up = y * GAME_HEIGHT / 2;
+	float dz = cam->forward.z * cam->cam_dist + cam->up.z * up;
+
+	// At or above the horizon there is no floor. Note that dz only decreases
+	// as y increases, so the rows below this one are fine.
+	if (dz >= 0) {
+		return false;
+	}
+
+	float t = -cam->position.z / dz;
+	valueAt0->x = cam->position.x + t * (cam->forward.x * cam->cam_dist + up * cam->up.x - cam->right.x * GAME_WIDTH / 2);
+	valueAt0->y = cam->position.y + t * (cam->forward.y * cam->cam_dist + up * cam->up.y - cam->right.y * GAME_WIDTH / 2);
+	step->x = t * cam->right.x;
+	step->y = t * cam->right.y;
+	return true;
+}
+
+// Narrows [*j0, *j1] to the j where lo <= valueAt0 + step * j <= hi. Returns
+// false if the range is empty.
+bool Floor_ClipRange(float valueAt0, float step, float lo, float hi, float* j0, float* j1) {
+	if (step == 0) {
+		return valueAt0 >= lo && valueAt0 <= hi;
+	}
+
+	float a = (lo - valueAt0) / step;
+	float b = (hi - valueAt0) / step;
+	if (a > b) {
+		float tmp = a;
+		a = b;
+		b = tmp;
+	}
+
+	if (a > *j0) *j0 = a;
+	if (b < *j1) *j1 = b;
+	return *j0 <= *j1;
+}
+
+void DrawFloor() {
+	Camera* cam = &mainCamera;
+	float size = 1 << track.size_log2;
+
+	for (int i = 0; i < GAME_HEIGHT; i++) {
+		vec3 top;
+		vec3 topStep;
+		if (!Floor_Row(cam, mapf(i, 0, GAME_HEIGHT, 1, -1), &top, &topStep)) {
+			continue;
+		}
+
+		// Only draw the part of the row that lands on the track; the sky
+		// stays visible everywhere else.
+		float j0 = 0;
+		float j1 = GAME_WIDTH;
+		if (!Floor_ClipRange(top.x, topStep.x, 0, size, &j0, &j1)) {
+			continue;
+		}
+		if (!Floor_ClipRange(top.y, topStep.y, 0, size, &j0, &j1)) {
+			continue;
+		}
+
+		vec3 bottom;
+		vec3 bottomStep;
+		if (!Floor_Row(cam, mapf(i + 1, 0, GAME_HEIGHT, 1, -1), &bottom, &bottomStep)) {
+			continue;
+		}
+
+		// One world unit is one texel, so the texture coordinates of a corner
+		// are its world position on the track.
+		SDL_Vertex corners[4];
+		Renderer_Vertex(&corners[0], j0, i, (top.x + topStep.x * j0) / size, (top.y + topStep.y * j0) / size);
+		Renderer_Vertex(&corners[1], j1, i, (top.x + topStep.x * j1) / size, (top.y + topStep.y * j1) / size);
+		Renderer_Vertex(&corners[2], j1, i + 1, (bottom.x + bottomStep.x * j1) / size, (bottom.y + bottomStep.y * j1) / size);
+		Renderer_Vertex(&corners[3], j0, i + 1, (bottom.x + bottomStep.x * j0) / size, (bottom.y + bottomStep.y * j0) / size);
+		Renderer_Quad(track.trackImage, corners);
+	}
+
+	Renderer_Flush();
+}
+
+SpriteImage* Sprite_GetImage(const char* path) {
+	for (int i = 0; i < numSpriteImages; i++) {
+		if (strcmp(spriteImages[i].path, path) == 0) {
+			return &spriteImages[i];
+		}
+	}
+
+	if (numSpriteImages == MAX_SPRITE_IMAGES) {
+		fprintf(stderr, "Ran out of sprite images\n");
+		exit(EXIT_FAILURE);
+	}
+
+	SDL_Surface* surf = Asset_LoadSurface(path);
+	if (surf == NULL) {
+		fprintf(stderr, "Unable to load sprite: %s\n", IMG_GetError());
+		exit(EXIT_FAILURE);
+	}
+
+	SDL_Surface* converted = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGBA32, 0);
+	SDL_FreeSurface(surf);
+	if (converted == NULL) {
+		fprintf(stderr, "Unable to convert sprite: %s\n", SDL_GetError());
+		exit(EXIT_FAILURE);
+	}
+
+	SpriteImage* image = &spriteImages[numSpriteImages++];
+	snprintf(image->path, sizeof(image->path), "%s", path);
+	image->w = converted->w;
+	image->h = converted->h;
+	image->numAngles = 1;
+	image->texture = SDL_CreateTextureFromSurface(renderer, converted);
+	SDL_FreeSurface(converted);
+
+	if (image->texture == NULL) {
+		fprintf(stderr, "Unable to upload sprite: %s\n", SDL_GetError());
+		exit(EXIT_FAILURE);
+	}
+	SDL_SetTextureBlendMode(image->texture, SDL_BLENDMODE_BLEND);
+	SDL_SetTextureScaleMode(image->texture, SDL_ScaleModeNearest);
+	return image;
 }
 
 int AddSprite(const char* path) {
@@ -886,16 +1196,7 @@ int AddSprite(const char* path) {
 		exit(EXIT_FAILURE);
 	}
 
-	SDL_Surface* surf = IMG_Load(path);
-	if (surf == NULL) {
-		fprintf(stderr, "Unable to load sprite: %s\n", IMG_GetError());
-		exit(EXIT_FAILURE);
-	}
-
-	sprites[numSprites].img = surf;
-	sprites[numSprites].numAngles = 1;
-	sprites[numSprites].w = surf->w;
-	sprites[numSprites].h = surf->h;
+	sprites[numSprites].img = Sprite_GetImage(path);
 	numSprites++;
 	return numSprites - 1;
 }
@@ -906,16 +1207,12 @@ int AddSpriteRotations(const char* path) {
 		exit(EXIT_FAILURE);
 	}
 
-	SDL_Surface* surf = IMG_Load(path);
-	if (surf == NULL) {
-		fprintf(stderr, "Unable to load sprite: %s\n", IMG_GetError());
-		exit(EXIT_FAILURE);
-	}
+	SpriteImage* image = Sprite_GetImage(path);
+	// The image is a strip of square frames, one per rotation.
+	image->numAngles = image->w / image->h;
+	image->w = image->h;
 
-	sprites[numSprites].img = surf;
-	sprites[numSprites].numAngles = surf->w / surf->h;
-	sprites[numSprites].w = surf->h;
-	sprites[numSprites].h = surf->h;
+	sprites[numSprites].img = image;
 	return numSprites++;
 }
 
@@ -972,12 +1269,13 @@ void DrawSprites() {
 
 	for (int i = 0; i < numSprites; i++) {
 		Sprite* spr = &sprites[drawOrder[i]];
+		SpriteImage* img = spr->img;
 
 		int rotationIndex = 0;
 		bool flipX = false;
-		if (spr->numAngles > 1) {
+		if (img->numAngles > 1) {
 			// Select which sprite
-			//rotationIndex = (frame / 10) % spr->numAngles;
+			//rotationIndex = (frame / 10) % img->numAngles;
 
 			vec2 diff = (vec2){spr->pos.x - cam->position.x, spr->pos.y - cam->position.y};
 			vec2 right = (vec2){cam->right.x, cam->right.y};
@@ -988,48 +1286,66 @@ void DrawSprites() {
 				flipX = true;
 				theta = -theta;
 			}
-			rotationIndex = mapf(theta, 0, M_PI, 0, spr->numAngles);
-			rotationIndex %= spr->numAngles * 2;
+			rotationIndex = mapf(theta, 0, M_PI, 0, img->numAngles);
+			rotationIndex %= img->numAngles * 2;
 			// Must be ">=": rotationIndex == numAngles would otherwise select
 			// a frame one past the end of the sprite sheet.
-			if (rotationIndex >= spr->numAngles) {
-				rotationIndex = rotationIndex - spr->numAngles;
+			if (rotationIndex >= img->numAngles) {
+				rotationIndex = rotationIndex - img->numAngles;
 				flipX = true;
 			}
 		}
 
-		vec3 left3 = vec3_sub(spr->pos, vec3_scale(cam->right, spr->w/2.0f));
-		vec3 right3 = vec3_add(spr->pos, vec3_scale(cam->right, spr->w/2.0f));
+		vec3 left3 = vec3_sub(spr->pos, vec3_scale(cam->right, img->w/2.0f));
+		vec3 right3 = vec3_add(spr->pos, vec3_scale(cam->right, img->w/2.0f));
 
-		vec3 top3 = vec3_add(spr->pos, vec3_scale(cam->up, spr->h));
+		vec3 top3 = vec3_add(spr->pos, vec3_scale(cam->up, img->h));
 
 		vec2 left = ProjectPoint(left3);
 		vec2 right = ProjectPoint(right3);
 		vec2 top = ProjectPoint(top3);
 
-		int leftx = clampf(left.x, 0, GAME_WIDTH);
-		int rightx = clampf(right.x, 0, GAME_WIDTH);
-
-		int topy = clampf(top.y, 0, GAME_HEIGHT);
-		int bottomy = clampf(left.y, 0, GAME_HEIGHT);
-
-		for (int y = topy; y < bottomy; y++) {
-			for (int x = leftx; x < rightx; x++) {
-				int tx;
-				if (flipX) {
-					tx = mapf(x, right.x, left.x, 0, spr->w) + spr->w * rotationIndex;
-				}
-				else {
-					tx = mapf(x, left.x, right.x, 0, spr->w) + spr->w * rotationIndex;
-				}
-				int ty = mapf(y, top.y, left.y, 0, spr->h);
-				rgba c = SampleSurface_rgba(spr->img, tx, ty);
-				if (c.a < 1) {
-					continue;
-				}
-				SetPixel(x, y, (rgb){c.r,c.g,c.b});
-			}
+		// A sprite is a flat quad facing the camera, so all of its corners are
+		// the same distance away: behind the camera its projection is mirrored
+		// and there is nothing sensible to draw.
+		if (vec3_dot(vec3_sub(spr->pos, cam->position), cam->forward) <= 0.01f) {
+			continue;
 		}
+
+		float x0 = left.x;
+		float x1 = right.x;
+		float y0 = top.y;
+		float y1 = left.y;
+		// (Also rejects NaN, which is what a degenerate projection produces.)
+		if (!(x1 > x0) || !(y1 > y0)) {
+			continue;
+		}
+
+		// Clip the sprite to the screen. The source rectangle is clipped by the
+		// same fraction, so the sprite does not slide as it leaves the screen.
+		float clipX0 = clampf(x0, 0, GAME_WIDTH);
+		float clipX1 = clampf(x1, 0, GAME_WIDTH);
+		float clipY0 = clampf(y0, 0, GAME_HEIGHT);
+		float clipY1 = clampf(y1, 0, GAME_HEIGHT);
+		if (clipX1 - clipX0 < 0.01f || clipY1 - clipY0 < 0.01f) {
+			continue;
+		}
+
+		int tx0 = mapf(clipX0, x0, x1, 0, img->w);
+		int ty0 = mapf(clipY0, y0, y1, 0, img->h);
+
+		SDL_Rect src = {
+			img->w * rotationIndex + tx0,
+			ty0,
+			(int)mapf(clipX1, x0, x1, 0, img->w) - tx0,
+			(int)mapf(clipY1, y0, y1, 0, img->h) - ty0,
+		};
+		if (src.w <= 0 || src.h <= 0) {
+			continue;
+		}
+
+		SDL_FRect dst = {clipX0, clipY0, clipX1 - clipX0, clipY1 - clipY0};
+		SDL_RenderCopyExF(renderer, img->texture, &src, &dst, 0, NULL, flipX ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
 	}
 }
 
@@ -1178,7 +1494,7 @@ void UpdateCamera() {
 
 void updateKeyboard() {
 	int numKeys;
-	const uint8_t* kb = SDL_GetKeyboardState(&numKeys);
+	const uint8_t* kb = Platform_PollKeyboard(&numKeys);
 
 	if (keyboardState == NULL) {
 		keyboardState = malloc(numKeys);
@@ -1250,8 +1566,8 @@ SDL_Texture* logo_notext;
 void Menu_init() {
 	gameState = State_Menu;
 
-	logo = IMG_LoadTexture(renderer, "logo.png");
-	logo_notext = IMG_LoadTexture(renderer, "brummie.png");
+	logo = Asset_LoadTexture(renderer, "logo.png");
+	logo_notext = Asset_LoadTexture(renderer, "brummie.png");
 	if (logo == NULL || logo_notext == NULL) {
 		fprintf(stderr, "Unable to load menu textures: %s\n", IMG_GetError());
 		exit(EXIT_FAILURE);
@@ -1352,17 +1668,9 @@ void Game_draw() {
 	SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
 	SDL_RenderClear(renderer);
 
-	// Get pointer to pixel data for frame
-	SDL_LockTexture(frameTexture, NULL, &textureData, &rowPitch);
-	memset(textureData, 127, rowPitch * GAME_HEIGHT);
-
 	DrawSky(&mainSkybox);
 	DrawFloor();
 	DrawSprites();
-
-	// Present frame
-	SDL_UnlockTexture(frameTexture);
-	SDL_RenderCopy(renderer, frameTexture, NULL, NULL);
 
 	DrawStringInfo dsi = {
 		.font = font,
@@ -1373,6 +1681,7 @@ void Game_draw() {
 		.alignY = TEXT_ALIGN_ABOVE,
 	};
 	drawStringf(&dsi, "Lap %d", mainPlayerState.lapNumber);
+
 
 	SDL_RenderPresent(renderer);
 }
@@ -1495,15 +1804,23 @@ static void MainLoopIteration(void) {
 }
 
 int main() {
-	SDL_Init(SDL_INIT_EVERYTHING);
+	Platform_Init();
+
+	SDL_Init(Platform_GetSubsystemFlags());
 	IMG_Init(IMG_INIT_PNG);
 	TTF_Init();
 
     SDL_version sdlVersion;
     SDL_GetVersion(&sdlVersion);
     printf("SDL Version: %d.%d.%d\n", sdlVersion.major, sdlVersion.minor, sdlVersion.patch);
-    
-    window = SDL_CreateWindow("Super Brummie Kart", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, GAME_WIDTH * 2, GAME_HEIGHT * 2, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+
+    // Console targets render to one fixed framebuffer, so the window size is up
+    // to the platform rather than the game.
+    int windowWidth;
+    int windowHeight;
+    Platform_GetWindowSize(GAME_WIDTH, GAME_HEIGHT, &windowWidth, &windowHeight);
+
+    window = SDL_CreateWindow("Super Brummie Kart", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, windowWidth, windowHeight, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
 	if (window == NULL) {
 		fprintf(stderr, "Unable to create window: %s\n", SDL_GetError());
 		return EXIT_FAILURE;
@@ -1518,12 +1835,6 @@ int main() {
 	SDL_RenderSetLogicalSize(renderer, GAME_WIDTH, GAME_HEIGHT);
 	SDL_RenderSetIntegerScale(renderer, true);
 
-	frameTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, GAME_WIDTH, GAME_HEIGHT);
-	if (frameTexture == NULL) {
-		fprintf(stderr, "Unable to create frame texture: %s\n", SDL_GetError());
-		return EXIT_FAILURE;
-	}
-
 	SDL_SetRelativeMouseMode(true);
 
 	const char* skyboxPaths[6] = {
@@ -1536,8 +1847,8 @@ int main() {
 	};
 	LoadSkybox(&mainSkybox, skyboxPaths);
 
-	font = TTF_OpenFont("Blinker-Regular.ttf", 72);
-	font_small = TTF_OpenFont("Blinker-Regular.ttf", 20);
+	font = Asset_OpenFont("Blinker-Regular.ttf", 72);
+	font_small = Asset_OpenFont("Blinker-Regular.ttf", 20);
 	if (font == NULL || font_small == NULL) {
 		fprintf(stderr, "Unable to load font: %s\n", TTF_GetError());
 		return EXIT_FAILURE;
@@ -1563,7 +1874,6 @@ int main() {
 	// Cleanup
 	Track_Unload(&track);
 	UnloadSkybox(&mainSkybox);
-	SDL_DestroyTexture(frameTexture);
 	SDL_DestroyTexture(logo);
 	SDL_DestroyTexture(logo_notext);
 	TTF_CloseFont(font);
@@ -1573,6 +1883,9 @@ int main() {
 	TTF_Quit();
 	IMG_Quit();
 	SDL_Quit();
+
+	// The Wii powers off inside this call, so it never returns there.
+	Platform_Exit();
 
     return 0;
 }
