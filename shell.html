@@ -285,8 +285,10 @@
 	//
 	// Browsers stop calling requestAnimationFrame while a document is hidden,
 	// which would stall the game loop and leave the loading overlay up forever
-	// in a background tab or an embedded preview pane. Timer driven frames keep
-	// the game alive there. The choice is re-made every time a frame is
+	// in a background tab or an embedded preview pane. Those documents also
+	// clamp setTimeout to one second, which is far too slow to play at, but a
+	// worker keeps its own timers, so while the document is hidden frames are
+	// paced from one instead. The choice is re-made every time a frame is
 	// scheduled, so a page that becomes visible again returns to real animation
 	// frames on its own.
 	(function () {
@@ -296,31 +298,83 @@
 
 		var nextId = 1;
 		var pending = {};
+		var waiting = 0;
+		var pacer = null;
+		var pacerUrl = null;
 
 		function now() {
 			return window.performance && performance.now ? performance.now() : Date.now();
 		}
 
+		function hidden() {
+			return document.hidden || document.visibilityState === 'hidden';
+		}
+
+		function detach(id, entry) {
+			entry.done = true;
+			delete pending[id];
+			if (waiting === id) waiting = 0;
+			clearTimeout(entry.timer);
+			if (entry.handle && nativeCancel) nativeCancel.call(window, entry.handle);
+		}
+
+		function run(id, entry) {
+			if (entry.done) return;
+			detach(id, entry);
+			entry.callback(now());
+		}
+
+		function onTick() {
+			var entry = pending[waiting];
+			if (entry) run(waiting, entry);
+		}
+
+		function startPacer() {
+			if (pacer || typeof Worker === 'undefined' || typeof URL === 'undefined'
+				|| !URL.createObjectURL) return;
+
+			try {
+				pacerUrl = URL.createObjectURL(new Blob(
+					['setInterval(function () { postMessage(0); }, 16);'],
+					{ type: 'text/javascript' }));
+				pacer = new Worker(pacerUrl);
+				pacer.onmessage = onTick;
+			} catch (e) {
+				pacer = null;
+			}
+		}
+
+		function stopPacer() {
+			if (pacer) {
+				pacer.terminate();
+				pacer = null;
+			}
+			if (pacerUrl) {
+				URL.revokeObjectURL(pacerUrl);
+				pacerUrl = null;
+			}
+		}
+
 		window.requestAnimationFrame = function (callback) {
 			var id = nextId++;
-			var entry = { handle: 0, timer: 0, done: false };
+			var entry = { callback: callback, handle: 0, timer: 0, done: false };
 			pending[id] = entry;
 
-			function run(time) {
-				if (entry.done) return;
-				entry.done = true;
-				delete pending[id];
-				clearTimeout(entry.timer);
-				callback(time);
-			}
-
-			if (document.hidden || document.visibilityState === 'hidden') {
-				entry.timer = setTimeout(function () { run(now()); }, 200);
+			if (hidden()) {
+				startPacer();
+				// Only one frame is ever outstanding, so a second request here
+				// means the pacer is not running; fall back to a plain timer.
+				if (pacer && !waiting) {
+					waiting = id;
+				} else {
+					entry.timer = setTimeout(function () { run(id, entry); }, 200);
+				}
 			} else {
-				entry.handle = nativeRequest.call(window, run);
+				stopPacer();
+				entry.handle = nativeRequest.call(window, function () { run(id, entry); });
 				// Safety net for a document that claims to be visible but never
 				// receives an animation frame.
-				entry.timer = setTimeout(function () { run(now()); }, 1000);
+				entry.timer = setTimeout(function () { run(id, entry); }, 1000);
 			}
 
 			return id;
@@ -328,12 +382,7 @@
 
 		window.cancelAnimationFrame = function (id) {
 			var entry = pending[id];
-			if (!entry) return;
-
-			entry.done = true;
-			delete pending[id];
-			clearTimeout(entry.timer);
-			if (entry.handle && nativeCancel) nativeCancel.call(window, entry.handle);
+			if (entry) detach(id, entry);
 		};
 	})();
 
@@ -524,6 +573,12 @@
 				ready = true;
 				loadingElement.classList.add('hidden');
 				fitCanvas();
+				// The module loaded, so a reload is allowed to recover from a
+				// version mismatch again.
+				try {
+					sessionStorage.removeItem(retryKey);
+				} catch (e) {
+				}
 			}
 			updateHud();
 		}
@@ -675,8 +730,52 @@
 		// browser; that is expected and must not be reported as an error.
 		var expectedUnwind = /unwind|exitstatus|exit status|program has exited/i;
 
+		// Mouse lock is a convenience, and browsers refuse it whenever the
+		// document is not focused, which is permanent in an embedded preview
+		// pane. Swallowing that rejection stops it being reported as a game
+		// failure; the message filter also covers requests that bypass the
+		// wrapper below.
+		var pointerLockDenied = /pointer\s*lock/i;
+		var nativePointerLock = Element.prototype.requestPointerLock;
+
+		if (nativePointerLock) {
+			Element.prototype.requestPointerLock = function () {
+				var result = nativePointerLock.apply(this, arguments);
+				if (result && typeof result.catch === 'function') result.catch(function () {});
+				return result;
+			};
+		}
+
+		// The glue and the wasm binary must come from the same build; a browser
+		// that pairs a cached index.js with a freshly fetched index.wasm fails to
+		// instantiate ("import requires a callable"). Reloading once usually
+		// picks up a matching pair, so try that before reporting the failure,
+		// and remember the attempt so a real build problem cannot loop.
+		var versionMismatch = /LinkError|CompileError|import requires a callable/i;
+		var retryKey = 'superbrummiekart.reloaded';
+
+		function recoverFromVersionMismatch(message) {
+			if (!versionMismatch.test(message)) return false;
+
+			try {
+				if (sessionStorage.getItem(retryKey)) return false;
+				sessionStorage.setItem(retryKey, '1');
+			} catch (e) {
+				return false;
+			}
+
+			location.replace(location.pathname + '?reload=' + Date.now());
+			return true;
+		}
+
 		function showError(message) {
 			if (expectedUnwind.test(message)) return;
+
+			if (recoverFromVersionMismatch(message)) {
+				errorTextElement.textContent = 'Reloading\u2026';
+				errorElement.classList.remove('hidden');
+				return;
+			}
 
 			console.error(message);
 			errorTextElement.textContent = message || 'Unknown error';
@@ -690,9 +789,11 @@
 
 		window.addEventListener('unhandledrejection', function (event) {
 			var reason = event.reason;
-			if (reason && reason.message) showError(reason.message);
-			else if (typeof reason === 'string') showError(reason);
-			else showError('Unhandled promise rejection');
+			var message = reason && reason.message ? reason.message
+				: (typeof reason === 'string' ? reason : '');
+			if (pointerLockDenied.test(message)) return;
+
+			showError(message || 'Unhandled promise rejection');
 		});
 
 		document.getElementById('error-dismiss').addEventListener('click', function () {
@@ -731,6 +832,12 @@
 		};
 	})();
 
+	// Substituted by CMake (see configure_file in CMakeLists.txt) with a hash of
+	// every build input. Every file the page fetches is requested with this
+	// stamp, so a browser either has the whole build cached or fetches all of
+	// it: mixing an old index.js with a new index.wasm cannot happen.
+	var buildStamp = '@SBK_BUILD_STAMP@';
+
 	var Module = {
 		canvas: document.getElementById('canvas'),
 		print: function () {
@@ -740,6 +847,11 @@
 			console.error.apply(console, arguments);
 		},
 		setStatus: GameShell.setStatus,
+		// Emscripten asks for index.wasm and the preloaded index.data through
+		// this, so both carry the same stamp as the page that asked for them.
+		locateFile: function (path) {
+			return buildStamp ? path + '?v=' + buildStamp : path;
+		},
 		onAbort: function (reason) {
 			GameShell.showError(reason
 				? 'The game failed to start: ' + reason
@@ -755,6 +867,18 @@
 		onGameStateChange: GameShell.onGameStateChange
 	};
 	</script>
-	{{{ SCRIPT }}}
+	<!-- The linker insists on finding its script placeholder in the shell, so
+	     it is kept below. Emscripten would replace it with a plain index.js
+	     tag, whose URL never changes between builds and can therefore be
+	     served from cache while the wasm binary is fetched fresh - the two
+	     then fail to instantiate. Hiding it in a comment keeps it inert, and
+	     the script below loads the glue from a URL carrying the build stamp. -->
+	<!-- {{{ SCRIPT }}} -->
+	<script type="text/javascript">
+		var glueScript = document.createElement('script');
+		glueScript.async = true;
+		glueScript.src = 'index.js' + (buildStamp ? '?v=' + buildStamp : '');
+		document.body.appendChild(glueScript);
+	</script>
 </body>
 </html>
