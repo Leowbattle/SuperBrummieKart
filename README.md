@@ -81,6 +81,12 @@ fullscreens the game element itself, reports failures in a banner rather than
 the console, and provides the touch controls, which reach the game through
 `Touch_SetInput`.
 
+The shell loads `index.js`, `index.wasm` and `index.data` from URLs carrying a
+stamp derived from the build's inputs (see `CMakeLists.txt`). Browsers keep
+these files cached after the first visit, so without the stamp a browser could
+pair a cached `index.js` with a freshly fetched `index.wasm` and fail to
+instantiate the module — the "import requires a callable" error.
+
 A `file://` URL will not work because the `.wasm`/`.data` files are fetched over
 HTTP — serve the directory instead:
 

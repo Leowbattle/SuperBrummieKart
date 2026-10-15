@@ -55,6 +55,45 @@ if(EMSCRIPTEN)
     # mobile-friendly layout and the touch controls.
     set(SHELL_HTML "${CMAKE_CURRENT_SOURCE_DIR}/shell.html")
 
+    # Stamp every build with a hash of its inputs. The shell appends it to the
+    # URLs of index.js, index.wasm and index.data so a browser can never pair a
+    # cached file from one build with a freshly fetched file from another: the
+    # module would otherwise fail to instantiate with "import requires a
+    # callable". A content hash is used rather than a timestamp so unchanged
+    # rebuilds keep the same URLs and stay cacheable.
+    set(SHELL_STAMP_INPUTS
+        "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
+        "${CMAKE_CURRENT_SOURCE_DIR}/main.c"
+        "${SHELL_HTML}")
+
+    foreach(asset IN LISTS ASSET_FILES)
+        list(APPEND SHELL_STAMP_INPUTS "${CMAKE_CURRENT_SOURCE_DIR}/${asset}")
+    endforeach()
+
+    foreach(dir IN LISTS ASSET_DIRS)
+        file(GLOB_RECURSE dir_files CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${dir}/*")
+        list(APPEND SHELL_STAMP_INPUTS ${dir_files})
+    endforeach()
+
+    # Re-run configure when any of them changes, otherwise the stamp would go
+    # stale and defeat the point.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SHELL_STAMP_INPUTS})
+
+    set(stamp_contents "")
+    foreach(input IN LISTS SHELL_STAMP_INPUTS)
+        file(SHA256 "${input}" input_hash)
+        string(APPEND stamp_contents "${input_hash}")
+    endforeach()
+
+    string(SHA256 SBK_BUILD_STAMP "${stamp_contents}")
+    string(SUBSTRING "${SBK_BUILD_STAMP}" 0 16 SBK_BUILD_STAMP)
+
+    configure_file("${SHELL_HTML}"
+        "${CMAKE_CURRENT_BINARY_DIR}/shell.generated.html"
+        @ONLY)
+
+    set(SHELL_HTML "${CMAKE_CURRENT_BINARY_DIR}/shell.generated.html")
+
     target_compile_options(superbrummiekart PRIVATE ${SDL_PORT_FLAGS})
     target_link_options(superbrummiekart PRIVATE
         ${SDL_PORT_FLAGS}
@@ -62,7 +101,7 @@ if(EMSCRIPTEN)
         -sEXIT_RUNTIME=1
         # The default shell's list is only applied when the default shell is
         # used, so it is repeated here for the properties shell.html sets.
-        -sINCOMING_MODULE_JS_API=canvas,monitorRunDependencies,onAbort,onExit,print,printErr,setStatus
+        -sINCOMING_MODULE_JS_API=canvas,locateFile,monitorRunDependencies,onAbort,onExit,print,printErr,setStatus
         "SHELL:--shell-file ${SHELL_HTML}")
 
     # Relink the HTML when the shell changes.
