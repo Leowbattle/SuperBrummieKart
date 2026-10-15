@@ -6,6 +6,29 @@ Winner of 2nd prize overall and Spooooookiest Hack
 
 https://devpost.com/software/super-brummie-kart
 
+## Playing
+
+| Action | Keyboard | Touch |
+| --- | --- | --- |
+| Start / confirm | `Enter` | "Tap to start" |
+| Accelerate | `W` | Accelerate pad |
+| Brake / reverse | `S` | Brake pad |
+| Steer left / right | `A` / `D` | Left / right pads |
+
+The web build adds a footer bar with two buttons:
+
+- **Fullscreen (F)** — takes the game fullscreen. The canvas is fitted to the
+  window, so a phone in landscape fills the screen and a phone in portrait
+  letterboxes.
+- **Show or hide touch controls (H)** — shows the on-screen pads, which can be
+  useful on a desktop too, since they can be driven with the mouse.
+
+While racing, the browser is asked for the pointer lock so the mouse can look
+around. Clicks then land on the canvas rather than the buttons, so click once
+(or press `Esc`) to get the cursor back; the `F` and `H` shortcuts keep working
+either way. On a touch screen the pads appear as soon as the race starts, and
+"Tap to start" enters fullscreen at the same time.
+
 ## Building
 
 The game is built with [CMake](https://cmake.org/) and can target either the
@@ -47,6 +70,16 @@ cmake --build build-web --parallel
 This produces `build-web/index.html`, `index.js`, `index.wasm` and `index.data`.
 The web build preloads all of the game's assets (images, font, skybox and
 tracks) into the virtual filesystem, so no extra files are needed at runtime.
+
+The web build uses the custom Emscripten shell in
+[`shell.html`](./shell.html) rather than the default one. The default shell's
+fullscreen helper sizes the canvas from `widthNative`, which an SDL2 build never
+sets, so entering fullscreen blanked the canvas to 0x0; it also asked for the
+pointer lock without handling a refusal, which surfaced as "Exception thrown,
+see JavaScript console". The custom shell fits the canvas to the window in CSS,
+fullscreens the game element itself, reports failures in a banner rather than
+the console, and provides the touch controls, which reach the game through
+`Touch_SetInput`.
 
 A `file://` URL will not work because the `.wasm`/`.data` files are fetched over
 HTTP — serve the directory instead:

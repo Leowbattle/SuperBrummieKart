@@ -16,6 +16,16 @@
 #include <emscripten.h>
 #endif
 
+// Bit flags for the on-screen controls. shell.html mirrors this enum in its
+// BUTTON table and pushes the pressed bits in through Touch_SetInput().
+enum TouchButton {
+	TOUCH_ACCELERATE = 1 << 0,
+	TOUCH_BRAKE = 1 << 1,
+	TOUCH_LEFT = 1 << 2,
+	TOUCH_RIGHT = 1 << 3,
+	TOUCH_CONFIRM = 1 << 4,
+};
+
 #define GAME_WIDTH 640
 #define GAME_HEIGHT 360
 #define ASPECT_RATIO ((float)GAME_WIDTH / GAME_HEIGHT)
@@ -358,6 +368,60 @@ uint8_t* lastKeyboardState = NULL;
 
 int mousexrel;
 int mouseyrel;
+
+// On-screen controls, held as a mask of enum TouchButton. The shell is the
+// only writer; it is ORed with the keyboard below so both keep working.
+static unsigned int touchButtons = 0;
+
+#ifdef __EMSCRIPTEN__
+// Called by shell.html whenever a touch control is pressed or released.
+EMSCRIPTEN_KEEPALIVE void Touch_SetInput(unsigned int buttons) {
+	touchButtons = buttons;
+}
+
+// Tells the shell which screen the game is on, so the touch controls are only
+// shown while driving.
+EM_JS(void, Shell_NotifyGameState, (int state), {
+	if (typeof Module !== 'undefined' && Module.onGameStateChange) {
+		Module.onGameStateChange(state);
+	}
+});
+
+// A phone has no mouse to lock the pointer for. Answered in JS as that is the
+// only place the question can be asked.
+EM_JS(int, Browser_IsTouchPrimary, (), {
+	return (navigator.maxTouchPoints > 0 && window.matchMedia('(hover: none)').matches) ? 1 : 0;
+});
+#else
+#define Shell_NotifyGameState(state) ((void)(state))
+static int Browser_IsTouchPrimary(void) {
+	return 0;
+}
+#endif
+
+static bool KeyDown(SDL_Scancode scancode) {
+	return keyboardState != NULL && keyboardState[scancode];
+}
+
+static bool Input_Accelerate(void) {
+	return KeyDown(SDL_SCANCODE_W) || (touchButtons & TOUCH_ACCELERATE) != 0;
+}
+
+static bool Input_Brake(void) {
+	return KeyDown(SDL_SCANCODE_S) || (touchButtons & TOUCH_BRAKE) != 0;
+}
+
+static bool Input_Left(void) {
+	return KeyDown(SDL_SCANCODE_A) || (touchButtons & TOUCH_LEFT) != 0;
+}
+
+static bool Input_Right(void) {
+	return KeyDown(SDL_SCANCODE_D) || (touchButtons & TOUCH_RIGHT) != 0;
+}
+
+static bool Input_Confirm(void) {
+	return KeyDown(SDL_SCANCODE_RETURN) || (touchButtons & TOUCH_CONFIRM) != 0;
+}
 
 typedef enum CameraMode {
 	FreeFlyCamera,
@@ -1046,19 +1110,19 @@ void UpdateFreeFlyCamera() {
 
 	Camera_SetYawPitch(cam, newYaw, newPitch);
 
-	if (keyboardState[SDL_SCANCODE_W]) {
+	if (Input_Accelerate()) {
 		cam->position.x += cam->forward_2d.x * flySpeed * global_dt;
 		cam->position.y += cam->forward_2d.y * flySpeed * global_dt;
 	}
-	if (keyboardState[SDL_SCANCODE_S]) {
+	if (Input_Brake()) {
 		cam->position.x -= cam->forward_2d.x * flySpeed * global_dt;
 		cam->position.y -= cam->forward_2d.y * flySpeed * global_dt;
 	}
-	if (keyboardState[SDL_SCANCODE_D]) {
+	if (Input_Right()) {
 		cam->position.x += cam->right.x * flySpeed * global_dt;
 		cam->position.y += cam->right.y * flySpeed * global_dt;
 	}
-	if (keyboardState[SDL_SCANCODE_A]) {
+	if (Input_Left()) {
 		cam->position.x -= cam->right.x * flySpeed * global_dt;
 		cam->position.y -= cam->right.y * flySpeed * global_dt;
 	}
@@ -1102,19 +1166,19 @@ void UpdateFirstPersonCamera() {
 		drag = 15;
 	}
 
-	if (keyboardState[SDL_SCANCODE_W]) {
+	if (Input_Accelerate()) {
 		velocity.x += cam->forward_2d.x * acceleration * global_dt;
 		velocity.y += cam->forward_2d.y * acceleration * global_dt;
 	}
-	if (keyboardState[SDL_SCANCODE_S]) {
+	if (Input_Brake()) {
 		velocity.x -= cam->forward_2d.x * acceleration * global_dt;
 		velocity.y -= cam->forward_2d.y * acceleration * global_dt;
 	}
 
-	if (keyboardState[SDL_SCANCODE_A]) {
+	if (Input_Left()) {
 		Camera_SetYawPitch(cam, cam->yaw - turnSpeed * global_dt, cam->pitch);
 	}
-	if (keyboardState[SDL_SCANCODE_D]) {
+	if (Input_Right()) {
 		Camera_SetYawPitch(cam, cam->yaw + turnSpeed * global_dt, cam->pitch);
 	}
 
@@ -1259,7 +1323,7 @@ void Menu_init() {
 }
 
 void Menu_update() {
-	if (keyboardState[SDL_SCANCODE_RETURN]) {
+	if (Input_Confirm()) {
 		Transition_init();
 	}
 }
@@ -1273,7 +1337,9 @@ void Menu_draw() {
 	SDL_RenderPresent(renderer);
 }
 
-int transition_timer;
+// Seconds left before the next track starts. Measured in seconds rather than
+// frames so the wait is the same on a 60 Hz monitor and a 120 Hz phone.
+float transition_timer;
 
 const char* trackNames[] = {
 	"tracks/mario_circuit",
@@ -1290,7 +1356,7 @@ void Transition_init() {
 
 	NextTrack();
 
-	transition_timer = 60;
+	transition_timer = 1.0f;
 }
 
 void NextTrack() {
@@ -1306,9 +1372,9 @@ void NextTrack() {
 
 void Transition_update() {
 	if (transition_timer > 0) {
-		transition_timer--;
+		transition_timer -= global_dt;
 	}
-	if (transition_timer == 0) {
+	if (transition_timer <= 0) {
 		Game_init();
 	}
 }
@@ -1410,6 +1476,28 @@ void update() {
 
 	updateKeyboard();
 
+	// Tell the shell when the screen changes: it uses this to show the touch
+	// controls only while driving, and the first notification is also the
+	// point at which the canvas is guaranteed to be sized.
+	static int notifiedState = -1;
+	if ((int)gameState != notifiedState) {
+		notifiedState = (int)gameState;
+		Shell_NotifyGameState(notifiedState);
+
+#ifdef __EMSCRIPTEN__
+		if (notifiedState == State_Game && !Browser_IsTouchPrimary()) {
+			// Hold the pointer lock for the race only: the request is
+			// deferred by Emscripten to the player's next key or click, so
+			// holding a steering key is what engages it.
+			SDL_SetRelativeMouseMode(true);
+		} else {
+			// On the menus a locked pointer has no position to report, which
+			// leaves the page's own buttons unclickable.
+			SDL_SetRelativeMouseMode(false);
+		}
+#endif
+	}
+
 	switch (gameState) {
 	case State_Menu:
 		Menu_update();
@@ -1451,10 +1539,32 @@ void draw() {
 	}
 }
 
+// Frame time is measured rather than assumed. The frame rate follows the
+// display, so a fixed 1/60 step would run the game at double speed on a 90 Hz
+// or 120 Hz screen.
+static float MeasureDeltaTime(void) {
+	static uint32_t lastTicks = 0;
+	uint32_t now = SDL_GetTicks();
+
+	if (lastTicks == 0) {
+		lastTicks = now;
+		return 0;
+	}
+
+	float dt = (now - lastTicks) / 1000.0f;
+	lastTicks = now;
+
+	// A long stall (a backgrounded tab, a slow first frame) must not teleport
+	// the player, so a huge step is capped to one twentieth of a second.
+	return clampf(dt, 0, 0.05f);
+}
+
 // One frame of the game: consume input, update the world and present it.
 // This is split out of main() so the Emscripten build can drive it from the
 // browser's requestAnimationFrame callback via emscripten_set_main_loop().
 static void MainLoopIteration(void) {
+	global_dt = MeasureDeltaTime();
+
 	mousexrel = 0;
 	mouseyrel = 0;
 
@@ -1524,7 +1634,16 @@ int main() {
 		return EXIT_FAILURE;
 	}
 
-	SDL_SetRelativeMouseMode(true);
+	// Pointer lock is what makes relative mouse mode work, and it is refused
+	// on touch-only devices (and would fire a failed request on the first tap).
+	// Those players steer with the on-screen controls instead. In a browser
+	// the lock is taken per race instead, further down, because a locked
+	// pointer cannot reach the page's buttons.
+#ifndef __EMSCRIPTEN__
+	if (!Browser_IsTouchPrimary()) {
+		SDL_SetRelativeMouseMode(true);
+	}
+#endif
 
 	const char* skyboxPaths[6] = {
 		"skybox/+x.png",

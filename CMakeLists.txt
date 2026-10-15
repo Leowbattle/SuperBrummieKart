@@ -49,11 +49,25 @@ if(EMSCRIPTEN)
         -sSDL2_IMAGE_FORMATS=png
         -sUSE_SDL_TTF=2)
 
+    # shell.html replaces Emscripten's default shell, whose Fullscreen button
+    # resizes the canvas to 0x0 (black screen) and requests pointer lock
+    # unguarded (an uncaught exception on phones). It also supplies the
+    # mobile-friendly layout and the touch controls.
+    set(SHELL_HTML "${CMAKE_CURRENT_SOURCE_DIR}/shell.html")
+
     target_compile_options(superbrummiekart PRIVATE ${SDL_PORT_FLAGS})
     target_link_options(superbrummiekart PRIVATE
         ${SDL_PORT_FLAGS}
         -sALLOW_MEMORY_GROWTH=1
-        -sEXIT_RUNTIME=1)
+        -sEXIT_RUNTIME=1
+        # The default shell's list is only applied when the default shell is
+        # used, so it is repeated here for the properties shell.html sets.
+        -sINCOMING_MODULE_JS_API=canvas,monitorRunDependencies,onAbort,onExit,print,printErr,setStatus
+        "SHELL:--shell-file ${SHELL_HTML}")
+
+    # Relink the HTML when the shell changes.
+    set_property(TARGET superbrummiekart APPEND PROPERTY
+        LINK_DEPENDS "${SHELL_HTML}")
 
     # Preload every asset into the virtual FS at its relative path (e.g.
     # logo.png -> /logo.png) so the game's fopen()/IMG_Load() calls just work.

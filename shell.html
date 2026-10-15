@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Super Brummie Kart</title>
+<!-- The game is a fixed 16:9 canvas, so the page must not zoom or scroll, and
+     the touch controls have to clear any notch or home bar. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<!-- An empty icon stops the browser asking for /favicon.ico. -->
+<link rel="icon" href="data:,">
+<style>
+	:root { color-scheme: dark; }
+
+	* { box-sizing: border-box; }
+
+	html, body {
+		margin: 0;
+		width: 100%;
+		height: 100%;
+		background: #000;
+		color: #fff;
+		font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+		overflow: hidden;
+		overscroll-behavior: none;
+		touch-action: none;
+		-webkit-user-select: none;
+		user-select: none;
+		-webkit-touch-callout: none;
+		-webkit-tap-highlight-color: transparent;
+	}
+
+	/* A fixed, dvh-tall stage keeps the play area inside the visible viewport on
+	   mobile browsers that show and hide their address bar. */
+	#stage {
+		position: fixed;
+		inset: 0;
+		height: 100dvh;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		background: #000;
+		overflow: hidden;
+		touch-action: none;
+	}
+
+	/* Deliberately no CSS size: SDL measures the element when it creates the
+	   window and adopts the CSS size if the stylesheet sets one. Leaving it to
+	   fitCanvas() keeps that decision in our hands. */
+	#canvas {
+		display: block;
+		background: #000;
+		outline: none;
+	}
+
+	.hidden { display: none !important; }
+
+	/* A portrait phone letterboxes the 16:9 canvas into a band in the middle,
+	   so nudge the player to turn the device. It sits in the flow under the
+	   canvas, which keeps it clear of the buttons. */
+	#rotate {
+		display: none;
+		margin-top: 10px;
+		padding: 0 14px;
+		color: rgba(255, 255, 255, 0.6);
+		font-size: clamp(12px, 2.4vmin, 16px);
+		text-align: center;
+		pointer-events: none;
+	}
+
+	@media (orientation: portrait) and (hover: none) {
+		#rotate { display: block; }
+	}
+
+	/* ---- touch controls ------------------------------------------------ */
+	/* Taps are hit-tested against these boxes from a single listener on the
+	   stage, so a finger can slide from one button to another mid-press. */
+	#hud {
+		position: absolute;
+		inset: 0;
+		pointer-events: none;
+	}
+
+	#hud > * { pointer-events: auto; }
+
+	.pad {
+		position: absolute;
+		bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+		display: flex;
+		align-items: flex-end;
+		gap: clamp(8px, 1.6vmin, 20px);
+	}
+
+	.pad-left { left: calc(16px + env(safe-area-inset-left, 0px)); }
+	.pad-right { right: calc(16px + env(safe-area-inset-right, 0px)); }
+
+	.btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: clamp(58px, 13vmin, 104px);
+		height: clamp(58px, 13vmin, 104px);
+		padding: 0;
+		border: 2px solid rgba(255, 255, 255, 0.5);
+		border-radius: 50%;
+		background: rgba(16, 16, 16, 0.35);
+		color: #fff;
+		font-size: clamp(16px, 3.6vmin, 28px);
+		line-height: 1;
+		touch-action: none;
+		-webkit-backdrop-filter: blur(3px);
+		backdrop-filter: blur(3px);
+		transition: background-color 70ms linear, transform 70ms linear;
+	}
+
+	.btn-big {
+		width: clamp(66px, 15vmin, 118px);
+		height: clamp(66px, 15vmin, 118px);
+	}
+
+	.btn.pressed {
+		background: rgba(255, 255, 255, 0.55);
+		transform: scale(0.93);
+	}
+
+	#start {
+		position: absolute;
+		left: 50%;
+		bottom: calc(16% + env(safe-area-inset-bottom, 0px));
+		transform: translateX(-50%);
+		padding: 12px 30px;
+		transition: background-color 70ms linear;
+		border: 2px solid rgba(255, 255, 255, 0.6);
+		border-radius: 999px;
+		background: rgba(16, 16, 16, 0.55);
+		color: #fff;
+		font: inherit;
+		font-size: clamp(15px, 2.6vmin, 22px);
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		touch-action: none;
+		animation: pulse 1.6s ease-in-out infinite;
+	}
+
+	@keyframes pulse {
+		0%, 100% { opacity: 0.7; }
+		50% { opacity: 1; }
+	}
+
+	#start.pressed {
+		background: rgba(255, 255, 255, 0.4);
+		animation: none;
+	}
+
+	/* ---- chrome -------------------------------------------------------- */
+	#bar {
+		position: absolute;
+		z-index: 20;
+		top: calc(8px + env(safe-area-inset-top, 0px));
+		right: calc(8px + env(safe-area-inset-right, 0px));
+		display: flex;
+		gap: 8px;
+		opacity: 0.5;
+		transition: opacity 150ms linear;
+	}
+
+	#bar:hover, #bar:focus-within { opacity: 1; }
+
+	#bar button {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 40px;
+		height: 40px;
+		padding: 0;
+		border: 1px solid rgba(255, 255, 255, 0.35);
+		border-radius: 10px;
+		background: rgba(0, 0, 0, 0.5);
+		color: #fff;
+		font: inherit;
+		font-size: 18px;
+		line-height: 1;
+	}
+
+	#bar button.pressed { background: rgba(255, 255, 255, 0.35); }
+
+	#loading {
+		position: absolute;
+		inset: 0;
+		z-index: 30;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: #000;
+		color: rgba(255, 255, 255, 0.85);
+		font-size: clamp(13px, 2.4vmin, 18px);
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+	}
+
+	/* Shown instead of the "Exception thrown, see JavaScript console" status
+	   that Emscripten's default shell uses, so phone players can read it. */
+	#error {
+		position: absolute;
+		z-index: 40;
+		top: calc(56px + env(safe-area-inset-top, 0px));
+		left: 50%;
+		transform: translateX(-50%);
+		display: flex;
+		align-items: center;
+		gap: 14px;
+		max-width: min(92vw, 680px);
+		padding: 12px 16px;
+		border: 1px solid #a33;
+		border-radius: 12px;
+		background: rgba(58, 0, 0, 0.94);
+		font-size: 14px;
+	}
+
+	#error-text {
+		flex: 1;
+		color: #ffc0c0;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		overflow-wrap: anywhere;
+	}
+
+	#error button {
+		padding: 6px 16px;
+		border: 1px solid rgba(255, 255, 255, 0.5);
+		border-radius: 999px;
+		background: transparent;
+		color: #fff;
+		font: inherit;
+	}
+
+	#toast {
+		position: absolute;
+		z-index: 35;
+		left: 50%;
+		bottom: calc(12% + env(safe-area-inset-bottom, 0px));
+		transform: translateX(-50%);
+		padding: 8px 18px;
+		border-radius: 999px;
+		background: rgba(0, 0, 0, 0.75);
+		font-size: 14px;
+		white-space: nowrap;
+	}
+</style>
+</head>
+<body>
+	<div id="stage">
+		<canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+		<div id="rotate">Rotate your phone for a bigger view</div>
+		<div id="hud">
+			<button id="start" class="hidden" data-button="confirm">Tap to start</button>
+			<div id="controls" class="hidden">
+				<div class="pad pad-left">
+					<button class="btn" data-button="left" aria-label="Steer left">&#9664;</button>
+					<button class="btn" data-button="right" aria-label="Steer right">&#9654;</button>
+				</div>
+				<div class="pad pad-right">
+					<button class="btn" data-button="brake" aria-label="Brake">&#9660;</button>
+					<button class="btn btn-big" data-button="accelerate" aria-label="Accelerate">&#9650;</button>
+				</div>
+			</div>
+		</div>
+		<div id="bar">
+			<button id="toggle-controls" title="Show or hide touch controls (H)" aria-label="Show or hide touch controls (H)">&#127918;</button>
+			<button id="fullscreen" title="Fullscreen (F)" aria-label="Fullscreen (F)">&#9974;</button>
+		</div>
+		<div id="error" class="hidden">
+			<div id="error-text"></div>
+			<button id="error-dismiss">Dismiss</button>
+		</div>
+		<div id="toast" class="hidden"></div>
+		<div id="loading"><div id="loading-text">Loading&hellip;</div></div>
+	</div>
+
+	<script type="text/javascript">
+	// Everything the page needs is kept in this one closure; the only globals it
+	// publishes are GameShell and Module.
+	var GameShell = (function () {
+		'use strict';
+
+		var stage = document.getElementById('stage');
+		var canvas = document.getElementById('canvas');
+		var padsElement = document.getElementById('controls');
+		var startButton = document.getElementById('start');
+		var fullscreenButton = document.getElementById('fullscreen');
+		var controlsButton = document.getElementById('toggle-controls');
+		var loadingElement = document.getElementById('loading');
+		var loadingTextElement = document.getElementById('loading-text');
+		var toastElement = document.getElementById('toast');
+		var errorElement = document.getElementById('error');
+		var errorTextElement = document.getElementById('error-text');
+
+		// Input bits pushed into the game. Keep in sync with enum TouchButton
+		// in main.c.
+		var BUTTON = {
+			accelerate: 1 << 0,
+			brake: 1 << 1,
+			left: 1 << 2,
+			right: 1 << 3,
+			confirm: 1 << 4
+		};
+
+		// Keep in sync with enum GameState in main.c.
+		var STATE = { menu: 0, transition: 1, game: 2, over: 3 };
+
+		var controls = Array.prototype.slice.call(stage.querySelectorAll('[data-button]'));
+		var hasTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+		var showControls = hasTouch;
+		if (!hasTouch) startButton.textContent = 'Press Enter to start';
+		var ready = false;
+		var gameState = -1;
+		var heldByPointer = new Map();
+		var sentMask = -1;
+		var toastTimer = 0;
+		var confirmUntil = 0;
+		var confirmTimer = 0;
+
+		// A tap can be shorter than the frame the game samples input on, so a
+		// confirm is held on briefly to make sure it is seen.
+		var CONFIRM_HOLD_MS = 150;
+
+		function pushTouchInput(mask) {
+			if (typeof Module._Touch_SetInput !== 'function') return;
+			if (mask === sentMask) return;
+			sentMask = mask;
+			Module._Touch_SetInput(mask);
+		}
+
+		function heldMask() {
+			var mask = 0;
+			heldByPointer.forEach(function (element) {
+				mask |= BUTTON[element.dataset.button];
+			});
+			return mask;
+		}
+
+		function sendTouchInput() {
+			var mask = heldMask();
+
+			if (mask & BUTTON.confirm) {
+				confirmUntil = performance.now() + CONFIRM_HOLD_MS;
+				clearTimeout(confirmTimer);
+				confirmTimer = setTimeout(sendTouchInput, CONFIRM_HOLD_MS + 20);
+			}
+			if (performance.now() < confirmUntil) mask |= BUTTON.confirm;
+
+			pushTouchInput(mask);
+		}
+
+		// ---- on-screen controls ------------------------------------------
+
+		function controlUnder(x, y) {
+			for (var i = 0; i < controls.length; i++) {
+				var rect = controls[i].getBoundingClientRect();
+				if (!rect.width || !rect.height) continue;
+				// A quarter-button margin makes the pads forgiving to aim at.
+				var margin = Math.min(rect.width, rect.height) * 0.25;
+				if (x >= rect.left - margin && x <= rect.right + margin &&
+						y >= rect.top - margin && y <= rect.bottom + margin) {
+					return controls[i];
+				}
+			}
+			return null;
+		}
+
+		function setHeld(pointerId, control) {
+			var previous = heldByPointer.get(pointerId);
+			if (previous === control) return;
+
+			if (previous) previous.classList.remove('pressed');
+			if (control) {
+				control.classList.add('pressed');
+				heldByPointer.set(pointerId, control);
+			} else {
+				heldByPointer.delete(pointerId);
+			}
+
+			sendTouchInput();
+		}
+
+		function releaseAll() {
+			heldByPointer.forEach(function (element) {
+				element.classList.remove('pressed');
+			});
+			heldByPointer.clear();
+			confirmUntil = 0;
+			clearTimeout(confirmTimer);
+			pushTouchInput(0);
+		}
+
+		function onPointerDown(event) {
+			if (event.pointerType === 'mouse' && event.button !== 0) return;
+
+			var control = controlUnder(event.clientX, event.clientY);
+			if (!control) return;
+
+			// Keep the browser from turning this into a text selection, a
+			// synthetic mouse event or a scroll.
+			event.preventDefault();
+
+			if (control === startButton && hasTouch && !fullscreenElement()) {
+				// A tap is a user gesture, so this is our one chance to enter
+				// fullscreen without the browser refusing.
+				requestFullscreen();
+			}
+
+			setHeld(event.pointerId, control);
+		}
+
+		function onPointerMove(event) {
+			if (!heldByPointer.has(event.pointerId)) return;
+			setHeld(event.pointerId, controlUnder(event.clientX, event.clientY));
+		}
+
+		function onPointerUp(event) {
+			if (!heldByPointer.has(event.pointerId)) return;
+			setHeld(event.pointerId, null);
+		}
+
+		stage.addEventListener('pointerdown', onPointerDown, { passive: false });
+		stage.addEventListener('pointermove', onPointerMove, { passive: false });
+		// Releases can land outside the stage, so they are tracked on window.
+		window.addEventListener('pointerup', onPointerUp);
+		window.addEventListener('pointercancel', onPointerUp);
+		window.addEventListener('blur', releaseAll);
+		document.addEventListener('visibilitychange', function () {
+			if (document.hidden) releaseAll();
+		});
+
+		// ---- layout -------------------------------------------------------
+
+		// SDL owns the canvas backing store (a fixed 1280x720 window), so the
+		// CSS size is fitted here instead. Emscripten's own canvas resizing is
+		// avoided on purpose: its fullscreen helper reads widthNative, which an
+		// SDL build never sets, and collapses the canvas to 0x0.
+		function fitCanvas() {
+			if (!ready) return;
+
+			var width = canvas.width || 1280;
+			var height = canvas.height || 720;
+			var scale = Math.min(stage.clientWidth / width, stage.clientHeight / height);
+			if (!isFinite(scale) || scale <= 0) return;
+
+			canvas.style.width = Math.round(width * scale) + 'px';
+			canvas.style.height = Math.round(height * scale) + 'px';
+		}
+
+		function updateHud() {
+			var playing = gameState === STATE.game;
+			var inMenu = gameState === STATE.menu;
+
+			padsElement.classList.toggle('hidden', !(playing && showControls));
+			startButton.classList.toggle('hidden', !(inMenu && ready));
+			controlsButton.classList.toggle('pressed', showControls);
+		}
+
+		// The very first game state change also means SDL has created its window
+		// and the canvas has its real size, so the page is ready to be laid out.
+		function onGameStateChange(state) {
+			gameState = state;
+			if (!ready) {
+				ready = true;
+				loadingElement.classList.add('hidden');
+				fitCanvas();
+			}
+			updateHud();
+		}
+
+		window.addEventListener('resize', fitCanvas);
+		window.addEventListener('orientationchange', fitCanvas);
+		if (window.visualViewport) {
+			window.visualViewport.addEventListener('resize', fitCanvas);
+		}
+
+		// ---- fullscreen ---------------------------------------------------
+
+		function fullscreenElement() {
+			return document.fullscreenElement || document.webkitFullscreenElement ||
+				document.mozFullScreenElement || document.msFullscreenElement || null;
+		}
+
+		function fullscreenRequest(prefix) {
+			var names = prefix
+				? [prefix + 'RequestFullscreen', prefix + 'RequestFullScreen']
+				: ['requestFullscreen'];
+
+			for (var i = 0; i < names.length; i++) {
+				if (typeof stage[names[i]] === 'function') return stage[names[i]].bind(stage);
+			}
+			return null;
+		}
+
+		function requestFullscreen() {
+			var request = fullscreenRequest() ||
+				fullscreenRequest('webkit') || fullscreenRequest('moz') || fullscreenRequest('ms');
+			if (!request) {
+				showToast('Use "Add to Home Screen" for fullscreen');
+				return;
+			}
+
+			try {
+				var result = request();
+				// Browsers only resolve this on success; a refusal is not fatal
+				// for the game so it only gets a hint.
+				if (result && typeof result.catch === 'function') {
+					result.catch(function (error) {
+						console.warn('Fullscreen request failed:', error);
+						showToast('Fullscreen was blocked');
+					});
+				}
+			} catch (error) {
+				console.warn('Fullscreen request failed:', error);
+				showToast('Fullscreen is not available');
+			}
+		}
+
+		function exitFullscreen() {
+			var names = ['exitFullscreen', 'webkitExitFullscreen', 'mozCancelFullScreen', 'msExitFullscreen'];
+			for (var i = 0; i < names.length; i++) {
+				if (typeof document[names[i]] === 'function') {
+					var result = document[names[i]]();
+					if (result && typeof result.catch === 'function') result.catch(function () {});
+					return;
+				}
+			}
+		}
+
+		function onFullscreenChange() {
+			var active = !!fullscreenElement();
+
+			fullscreenButton.innerHTML = active ? '&#10005;' : '&#9974;';
+			fullscreenButton.title = (active ? 'Exit fullscreen' : 'Fullscreen') + ' (F)';
+			fullscreenButton.setAttribute('aria-label', fullscreenButton.title);
+
+			// The stage has a new size, and mobile browsers report it a frame
+			// or two after the event.
+			fitCanvas();
+			requestAnimationFrame(fitCanvas);
+		}
+
+		document.addEventListener('fullscreenchange', onFullscreenChange);
+		document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+		// The game locks the pointer once it is under way, and a locked pointer
+		// stops reporting a position, so nothing on this page can be aimed at
+		// with it. Handing the cursor back is what makes the chrome usable
+		// again, and the game takes the lock back on the next click.
+		function releasePointerLock() {
+			var exit = document.exitPointerLock || document.mozExitPointerLock;
+			if (exit && (document.pointerLockElement || document.mozPointerLockElement)) {
+				exit.call(document);
+			}
+		}
+
+		function toggleFullscreen() {
+			releasePointerLock();
+			if (fullscreenElement()) exitFullscreen(); else requestFullscreen();
+		}
+
+		// While the pointer is locked every click lands on the canvas and
+		// carries no position, so the buttons cannot be aimed at. A click is
+		// the natural "give me my cursor back" gesture: the game asks for the
+		// lock again as soon as the player clicks to drive, and it never reads
+		// mouse buttons itself.
+		canvas.addEventListener('click', function () {
+			if (document.pointerLockElement || document.mozPointerLockElement) releasePointerLock();
+		});
+
+		function toggleControls() {
+			showControls = !showControls;
+			updateHud();
+		}
+
+		fullscreenButton.addEventListener('click', toggleFullscreen);
+		controlsButton.addEventListener('click', toggleControls);
+
+		// A locked pointer hides the cursor, so a desktop player who wants out
+		// of fullscreen mid-race needs telling where the exit is.
+		var escapeHintShown = false;
+
+		// Under the pointer lock every click lands on the canvas with frozen
+		// coordinates, so the buttons are unreachable until it is given back.
+		document.addEventListener('pointerlockchange', function () {
+			if (escapeHintShown) return;
+			if (!document.pointerLockElement) return;
+
+			escapeHintShown = true;
+			showToast('Click once, or press Esc, to use the buttons');
+		});
+
+		// F and H are not keys the game reads, so the chrome also has a
+		// keyboard route for when the pointer is locked.
+		window.addEventListener('keydown', function (event) {
+			if (event.ctrlKey || event.altKey || event.metaKey || event.repeat) return;
+
+			var key = event.key ? event.key.toLowerCase() : '';
+			if (key === 'f') toggleFullscreen();
+			else if (key === 'h') toggleControls();
+		});
+
+		// ---- notices ------------------------------------------------------
+
+		function showToast(message) {
+			toastElement.textContent = message;
+			toastElement.classList.remove('hidden');
+			clearTimeout(toastTimer);
+			toastTimer = setTimeout(function () {
+				toastElement.classList.add('hidden');
+			}, 2500);
+		}
+
+		// Emscripten unwinds out of main() when it hands the loop to the
+		// browser; that is expected and must not be reported as an error.
+		var expectedUnwind = /unwind|exitstatus|exit status|program has exited/i;
+
+		function showError(message) {
+			if (expectedUnwind.test(message)) return;
+
+			console.error(message);
+			errorTextElement.textContent = message || 'Unknown error';
+			errorElement.classList.remove('hidden');
+		}
+
+		window.addEventListener('error', function (event) {
+			var error = event.error;
+			showError(error && error.message ? error.message : event.message);
+		});
+
+		window.addEventListener('unhandledrejection', function (event) {
+			var reason = event.reason;
+			if (reason && reason.message) showError(reason.message);
+			else if (typeof reason === 'string') showError(reason);
+			else showError('Unhandled promise rejection');
+		});
+
+		document.getElementById('error-dismiss').addEventListener('click', function () {
+			errorElement.classList.add('hidden');
+		});
+
+		canvas.addEventListener('webglcontextlost', function (event) {
+			event.preventDefault();
+			showError('The graphics context was lost. Reload the page to keep playing.');
+		});
+
+		function setStatus(text) {
+			if (ready || !text) return;
+
+			// Emscripten reports preload progress as "(bytes/bytes)".
+			var match = /\((\d+)\/(\d+)\)/.exec(text);
+			loadingTextElement.textContent = match
+				? 'Loading ' + Math.round(100 * match[1] / match[2]) + '%'
+				: 'Loading\u2026';
+		}
+
+		return {
+			onGameStateChange: onGameStateChange,
+			setStatus: setStatus
+		};
+	})();
+
+	var Module = {
+		canvas: document.getElementById('canvas'),
+		print: function () {
+			console.log.apply(console, arguments);
+		},
+		printErr: function () {
+			console.error.apply(console, arguments);
+		},
+		setStatus: GameShell.setStatus,
+		totalDependencies: 0,
+		monitorRunDependencies: function (left) {
+			this.totalDependencies = Math.max(this.totalDependencies, left);
+			GameShell.setStatus(left ? 'Loading\u2026' : '');
+		},
+		// Called by the game whenever it changes screen (see Shell_NotifyGameState
+		// in main.c) so the touch controls match what is on screen.
+		onGameStateChange: GameShell.onGameStateChange
+	};
+	</script>
+	{{{ SCRIPT }}}
+</body>
+</html>
