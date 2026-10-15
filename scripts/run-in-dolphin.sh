@@ -109,24 +109,45 @@ runner=$!
 # Keep bash from printing a job-control notice when the wrapper is killed below.
 disown "$runner" 2>/dev/null || true
 
-deadline=$((SECONDS + seconds))
-while kill -0 "$runner" 2>/dev/null && [ "$SECONDS" -lt "$deadline" ]; do
+# The emulator is found by its command line rather than by the job: inside the
+# snap it runs as a grandchild of the wrapper, so the job is not the process that
+# should be waited on - the wrapper can exit while Dolphin keeps running. It is
+# always started with our .dol as an argument, which is what the match relies on;
+# ps truncates the command name, hence the prefix match.
+emulator_pids() {
+	ps -eo pid=,comm=,args= |
+		awk -v dol="$dol" '$2 ~ /^dolphin-emu-nog/ && index($0, dol) { print $1 }'
+}
+
+kill_emulator() {
+	for pid in $(emulator_pids); do
+		if [ -n "$snap_name" ]; then
+			# Inside the snap the emulator can only be signalled through the
+			# snap's own profile.
+			timeout 30 snap run --shell "$snap_name" -c "kill -9 $pid" >/dev/null 2>&1 || true
+		else
+			kill -9 "$pid" 2>/dev/null || true
+		fi
+	done
+}
+
+# Push the game along until the emulator is up, so that a slow start is not
+# mistaken for the game finishing.
+for _ in $(seq 1 100); do
+	if [ -n "$(emulator_pids)" ]; then
+		break
+	fi
 	sleep 0.2
 done
 
-# The emulator is killed by its command line rather than by the job: it runs as
-# a grandchild of the snap wrapper and can outlive it, and inside the snap it can
-# only be signalled through the snap's own profile. It is always started with our
-# .dol as an argument, which is what the match below relies on; ps truncates the
-# command name, hence the prefix match.
-for pid in $(ps -eo pid=,comm=,args= |
-	awk -v dol="$dol" '$2 ~ /^dolphin-emu-nog/ && index($0, dol) { print $1 }'); do
-	if [ -n "$snap_name" ]; then
-		timeout 30 snap run --shell "$snap_name" -c "kill -9 $pid" >/dev/null 2>&1 || true
-	else
-		kill -9 "$pid" 2>/dev/null || true
-	fi
+# Stop at the deadline, or earlier if the emulator went away on its own - the
+# game powers the console off when it exits.
+deadline=$((SECONDS + seconds))
+while [ "$SECONDS" -lt "$deadline" ] && [ -n "$(emulator_pids)" ]; do
+	sleep 0.2
 done
+
+kill_emulator
 
 # Do not wait on the wrapper indefinitely if it outlives the emulator.
 for _ in $(seq 1 50); do
@@ -136,6 +157,7 @@ done
 kill -9 "$runner" 2>/dev/null || true
 
 echo "Dolphin warnings: $(grep -ac 'Warning: Invalid ' "$log" || true)"
+echo "Dropped draw calls: $(grep -ac 'Unable to draw geometry' "$log" || true)"
 echo "--- ${dol##*/} ---"
 grep -a OSREPORT "$log" | sed 's/\r$//' | cut -d: -f5- | sed 's/^ //' || true
 # A jump to a NULL pointer is logged as an exception rather than as an invalid

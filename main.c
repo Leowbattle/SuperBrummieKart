@@ -834,8 +834,12 @@ void Renderer_Vertex(SDL_Vertex* v, float x, float y, float u, float vTex) {
 	v->position.x = x;
 	v->position.y = y;
 	v->color = (SDL_Color){0xff, 0xff, 0xff, 0xff};
-	v->tex_coord.x = u;
-	v->tex_coord.y = vTex;
+	// The floor's rows reach past the edge of the track texture and clipping the
+	// sky to the screen lands on face boundaries, which both leave coordinates a
+	// hair outside the texture. The Wii's renderer rejects a whole draw call when
+	// a vertex does that, so snap them to the edge instead.
+	v->tex_coord.x = SDL_clamp(u, 0.0f, 1.0f);
+	v->tex_coord.y = SDL_clamp(vTex, 0.0f, 1.0f);
 }
 
 void Renderer_Triangle(SDL_Texture* texture, const SDL_Vertex* a, const SDL_Vertex* b, const SDL_Vertex* c) {
