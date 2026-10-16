@@ -1023,9 +1023,39 @@ int cmp_sprites(const void* a, const void* b) {
 	}
 }
 
-void DrawSprites() {
-	// TODO: Fix sprite rotations
+// A rotation sheet covers half a turn: the first frame is the sprite seen from
+// behind and the last one is it seen from the front. The other half of the turn
+// is drawn with mirrored frames, so this returns the frame to use and reports
+// through flipX whether it has to be mirrored.
+static int Sprite_RotationFrame(const Sprite* spr, const Camera* cam, bool* flipX) {
+	vec2 diff = (vec2){spr->pos.x - cam->position.x, spr->pos.y - cam->position.y};
+	vec2 right = (vec2){cam->right.x, cam->right.y};
 
+	// Direction the camera is looking at the sprite from, including how far the
+	// sprite sits off to the side of the screen. atan2 rather than atan so the
+	// angle keeps its sense when the sprite is behind the camera.
+	float viewAngle = cam->yaw + atan2f(GAME_WIDTH/(2*cam->cam_dist) * vec2_dot(diff, right), vec2_dot(diff, cam->forward_2d));
+
+	// How far the sprite is turned away from that view ray. Wrapped into
+	// (-pi, pi] because the camera's yaw accumulates without bound, which would
+	// otherwise pick a frame as if the sprite had gone round several times.
+	float theta = spr->angle - viewAngle;
+	theta = atan2f(sinf(theta), cosf(theta));
+
+	// The sheet draws the first half of the turn with the sprite's nose towards
+	// the right of the frame, so the other half has to be mirrored: the nose
+	// ends up on the left of the sprite's own centre exactly when the sprite is
+	// turned anticlockwise of the view ray, which is the sign of theta. How far
+	// the heading leans across the camera's own right axis is not the same test
+	// and picks the wrong half for a sprite that is off to one side of the view.
+	*flipX = theta < 0;
+
+	// The frames are spread evenly over the half turn, first one facing away from
+	// the camera and last one facing it, so take the nearest.
+	return lroundf(fabsf(theta)/M_PI * (spr->numAngles - 1));
+}
+
+void DrawSprites() {
 	Camera* cam = &mainCamera;
 
 	int drawOrder[MAX_SPRITES];
@@ -1040,26 +1070,7 @@ void DrawSprites() {
 		int rotationIndex = 0;
 		bool flipX = false;
 		if (spr->numAngles > 1) {
-			// Select which sprite
-			//rotationIndex = (frame / 10) % spr->numAngles;
-
-			vec2 diff = (vec2){spr->pos.x - cam->position.x, spr->pos.y - cam->position.y};
-			vec2 right = (vec2){cam->right.x, cam->right.y};
-
-			float theta = spr->angle - cam->yaw - atanf(GAME_WIDTH/(2*cam->cam_dist)* vec2_dot(diff, right) / vec2_dot(diff, cam->forward_2d));
-			// printf("%f\n", theta);
-			if (theta < 0) {
-				flipX = true;
-				theta = -theta;
-			}
-			rotationIndex = mapf(theta, 0, M_PI, 0, spr->numAngles);
-			rotationIndex %= spr->numAngles * 2;
-			// Must be ">=": rotationIndex == numAngles would otherwise select
-			// a frame one past the end of the sprite sheet.
-			if (rotationIndex >= spr->numAngles) {
-				rotationIndex = rotationIndex - spr->numAngles;
-				flipX = true;
-			}
+			rotationIndex = Sprite_RotationFrame(spr, cam, &flipX);
 		}
 
 		vec3 left3 = vec3_sub(spr->pos, vec3_scale(cam->right, spr->w/2.0f));
@@ -1268,6 +1279,10 @@ void Enemy_Update(Enemy* enemy) {
 	if (enemy->pathIndex == -1) {
 		Enemy_BeginPathSegment(enemy, 0);
 	}
+
+	// Face the direction being driven, so the rotation sheet picks a frame that
+	// matches the way the enemy is travelling.
+	sprites[enemy->sprite].angle = atan2f(enemy->dir.y, enemy->dir.x);
 
 	vec2 old_pos = enemy->pos;
 	enemy->pos.x += enemy->dir.x * enemy->speed * global_dt;
